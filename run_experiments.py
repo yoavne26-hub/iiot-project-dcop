@@ -6,6 +6,7 @@ import argparse
 import csv
 from pathlib import Path
 
+from backend.algorithms.dms import DMSAlgorithm
 from backend.algorithms.dsa_c import DSACAlgorithm
 from backend.algorithms.mgm import MGMAlgorithm
 from backend.algorithms.mgm2 import MGM2Algorithm
@@ -28,8 +29,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iterations", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dsa-probability", type=float, default=0.75)
-    parser.add_argument("--algorithm", choices=("dsa-c", "mgm", "mgm2"), default="dsa-c")
+    parser.add_argument(
+        "--algorithm",
+        choices=("dsa-c", "mgm", "mgm2", "dms"),
+        default="dsa-c",
+    )
     parser.add_argument("--simulator", choices=("sync", "async"), default="sync")
+    parser.add_argument("--dms-damping", type=float, default=0.5)
     parser.add_argument(
         "--output",
         default=None,
@@ -38,7 +44,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_algorithm(args: argparse.Namespace) -> DSACAlgorithm | MGMAlgorithm | MGM2Algorithm:
+def build_algorithm(
+    args: argparse.Namespace,
+) -> DMSAlgorithm | DSACAlgorithm | MGMAlgorithm | MGM2Algorithm:
     """Build the selected algorithm."""
 
     if args.algorithm == "dsa-c":
@@ -50,6 +58,11 @@ def build_algorithm(args: argparse.Namespace) -> DSACAlgorithm | MGMAlgorithm | 
         return MGMAlgorithm(seed=args.seed)
     if args.algorithm == "mgm2":
         return MGM2Algorithm(seed=args.seed)
+    if args.algorithm == "dms":
+        return DMSAlgorithm(
+            damping=args.dms_damping,
+            seed=args.seed,
+        )
 
     raise ValueError(f"Unsupported algorithm: {args.algorithm}.")
 
