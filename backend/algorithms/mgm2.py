@@ -308,18 +308,38 @@ class MGM2Algorithm(DistributedAlgorithm):
         self,
         candidates: list[_MoveCandidate],
     ) -> list[_MoveCandidate]:
-        """Select non-overlapping candidate moves by deterministic priority."""
+        """Select candidate moves that do not share agents or constraint edges."""
 
         selected: list[_MoveCandidate] = []
-        used_agents: set[int] = set()
 
         for candidate in sorted(candidates, key=self._priority_key):
-            if any(agent_id in used_agents for agent_id in candidate.agents):
+            if any(self._moves_conflict(candidate, selected_move) for selected_move in selected):
                 continue
             selected.append(candidate)
-            used_agents.update(candidate.agents)
 
         return selected
+
+    def _moves_conflict(
+        self,
+        left: _MoveCandidate,
+        right: _MoveCandidate,
+    ) -> bool:
+        """Return True if two moves overlap or are linked by a constraint edge."""
+
+        problem = self._require_problem()
+        left_agents = set(left.agents)
+        right_agents = set(right.agents)
+
+        if not left_agents.isdisjoint(right_agents):
+            return True
+
+        for left_agent in left_agents:
+            for right_agent in right_agents:
+                edge_key = (min(left_agent, right_agent), max(left_agent, right_agent))
+                if edge_key in problem.constraints:
+                    return True
+
+        return False
 
     @staticmethod
     def _priority_key(candidate: _MoveCandidate) -> tuple[int, int, tuple[int, ...]]:
