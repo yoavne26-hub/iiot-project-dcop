@@ -7,6 +7,7 @@ from backend.algorithms.base import (
 )
 from backend.algorithms.dsa_c import DSACAlgorithm
 from backend.algorithms.mgm import MGMAlgorithm
+from backend.algorithms.mgm2 import MGM2Algorithm
 
 __all__ = [
     "AlgorithmStepResult",
@@ -14,4 +15,5 @@ __all__ = [
     "DSACAlgorithm",
     "DistributedAlgorithm",
     "MGMAlgorithm",
+    "MGM2Algorithm",
 ]
