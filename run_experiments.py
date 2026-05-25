@@ -9,6 +9,7 @@ from pathlib import Path
 from backend.algorithms.dsa_c import DSACAlgorithm
 from backend.dcop.cost import calculate_global_cost
 from backend.dcop.generator import generate_random_dcop
+from backend.simulators.asynchronous import AsynchronousSimulator
 from backend.simulators.synchronous import SynchronousSimulator
 
 
@@ -25,9 +26,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iterations", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dsa-probability", type=float, default=0.75)
+    parser.add_argument("--simulator", choices=("sync", "async"), default="sync")
     parser.add_argument(
         "--output",
-        default="results/dsa_c_sync_smoke.csv",
+        default=None,
         help="Path for iteration,cost CSV output.",
     )
     return parser.parse_args()
@@ -61,7 +63,10 @@ def main() -> None:
         probability=args.dsa_probability,
         seed=args.seed,
     )
-    simulator = SynchronousSimulator(
+    simulator_class = (
+        SynchronousSimulator if args.simulator == "sync" else AsynchronousSimulator
+    )
+    simulator = simulator_class(
         problem=problem,
         algorithm=algorithm,
         iterations=args.iterations,
@@ -71,7 +76,7 @@ def main() -> None:
     final_cost = result.cost_history[-1]
     best_cost = min(result.cost_history)
 
-    output_path = Path(args.output)
+    output_path = Path(args.output or f"results/dsa_c_{args.simulator}_smoke.csv")
     write_cost_history_csv(output_path, result.cost_history)
 
     print("Problem summary")
@@ -80,6 +85,7 @@ def main() -> None:
     print(f"  constraints: {len(problem.constraints)}")
     print(f"  initial cost: {initial_cost}")
     print("Run summary")
+    print(f"  simulator: {args.simulator}")
     print(f"  final cost: {final_cost}")
     print(f"  best cost: {best_cost}")
     print(f"  total messages: {result.total_messages}")

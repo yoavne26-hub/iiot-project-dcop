@@ -9,6 +9,16 @@ from backend.dcop.problem import DCOPProblem
 
 
 @dataclass
+class AlgorithmMessage:
+    """A message exchanged by distributed algorithm agents."""
+
+    sender: int
+    receiver: int
+    kind: str
+    payload: dict[str, object]
+
+
+@dataclass
 class AlgorithmStepResult:
     """Result produced by one algorithm iteration."""
 
@@ -38,3 +48,18 @@ class DistributedAlgorithm(ABC):
     @abstractmethod
     def get_assignment(self) -> dict[int, int]:
         """Return the algorithm's current assignment."""
+
+    def initial_async_messages(self) -> list[AlgorithmMessage]:
+        """Return messages that seed an asynchronous run."""
+
+        return []
+
+    def handle_async_message(self, message: AlgorithmMessage) -> AlgorithmStepResult:
+        """Handle one asynchronous message."""
+
+        raise NotImplementedError(f"{self.name} does not support asynchronous messages.")
+
+    def on_async_activation(self, agent_id: int) -> AlgorithmStepResult:
+        """Run one asynchronous activation for an agent."""
+
+        raise NotImplementedError(f"{self.name} does not support asynchronous activation.")

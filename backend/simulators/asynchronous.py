@@ -1,0 +1,228 @@
+"""Asynchronous simulator for DCOP algorithms."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import queue
+import random
+import threading
+import time
+
+from backend.algorithms.base import (
+    AlgorithmMessage,
+    AlgorithmStepResult,
+    DistributedAlgorithm,
+)
+from backend.dcop.cost import calculate_global_cost
+from backend.dcop.problem import DCOPProblem
+from backend.simulators.synchronous import SimulationRunResult
+
+
+@dataclass
+class _AsyncWorkItem:
+    """One unit of worker-thread work."""
+
+    kind: str
+    agent_id: int
+    message: AlgorithmMessage | None = None
+
+
+@dataclass
+class _AsyncWorkResult:
+    """Worker result returned to the simulator controller."""
+
+    work: _AsyncWorkItem
+    step_result: AlgorithmStepResult | None = None
+    error: Exception | None = None
+
+
+class _AsyncAgentWorker(threading.Thread):
+    """Worker thread that owns one agent inbox."""
+
+    def __init__(self, agent_id: int, simulator: "AsynchronousSimulator") -> None:
+        super().__init__(name=f"DCOPAsyncAgent-{agent_id}", daemon=True)
+        self.agent_id = agent_id
+        self.simulator = simulator
+        self.inbox: queue.Queue[_AsyncWorkItem | None] = queue.Queue()
+
+    def run(self) -> None:
+        """Process queued activations and messages until stopped."""
+
+        while True:
+            work = self.inbox.get()
+            if work is None:
+                return
+
+            try:
+                if work.kind == "activation":
+                    step_result = self.simulator._handle_activation(work.agent_id)
+                elif work.kind == "message":
+                    if work.message is None:
+                        raise ValueError("Message work item is missing its message.")
+                    step_result = self.simulator._handle_message(work.message)
+                else:
+                    raise ValueError(f"Unsupported async work kind: {work.kind}.")
+                self.simulator._done_queue.put(
+                    _AsyncWorkResult(work=work, step_result=step_result)
+                )
+            except Exception as error:
+                self.simulator._done_queue.put(
+                    _AsyncWorkResult(work=work, error=error)
+                )
+
+
+class AsynchronousSimulator:
+    """Run a distributed algorithm through worker inboxes and messages."""
+
+    def __init__(
+        self,
+        problem: DCOPProblem,
+        algorithm: DistributedAlgorithm,
+        iterations: int,
+        seed: int | None = None,
+    ) -> None:
+        if iterations <= 0:
+            raise ValueError("iterations must be greater than 0.")
+
+        self.problem = problem
+        self.algorithm = algorithm
+        self.iterations = iterations
+        self.seed = seed
+        self._scheduler_rng = random.Random(seed)
+        self._algorithm_lock = threading.Lock()
+        self._done_queue: queue.Queue[_AsyncWorkResult] = queue.Queue()
+        self._workers = {
+            agent_id: _AsyncAgentWorker(agent_id=agent_id, simulator=self)
+            for agent_id in range(problem.num_agents)
+        }
+        self._total_messages = 0
+        self._activation_count = 0
+
+    def run(self) -> SimulationRunResult:
+        """Run asynchronous checkpoints and collect global costs."""
+
+        started_at = time.perf_counter()
+        self._start_workers()
+
+        try:
+            with self._algorithm_lock:
+                self.algorithm.initialize(
+                    self.problem,
+                    self.problem.initial_assignment,
+                    seed=self.seed,
+                )
+                initial_messages = self.algorithm.initial_async_messages()
+
+            self._deliver_messages(initial_messages)
+
+            cost_history: list[int] = []
+            for _ in range(self.iterations):
+                agent_order = list(range(self.problem.num_agents))
+                self._scheduler_rng.shuffle(agent_order)
+
+                for agent_id in agent_order:
+                    self._activate_agent(agent_id)
+
+                with self._algorithm_lock:
+                    assignment = self.algorithm.get_assignment()
+                cost_history.append(calculate_global_cost(self.problem, assignment))
+
+            with self._algorithm_lock:
+                final_assignment = self.algorithm.get_assignment()
+
+            runtime_seconds = time.perf_counter() - started_at
+            return SimulationRunResult(
+                simulator="async",
+                algorithm=self.algorithm.name,
+                iterations=self.iterations,
+                cost_history=cost_history,
+                final_assignment=final_assignment,
+                total_messages=self._total_messages,
+                runtime_seconds=runtime_seconds,
+                metadata={
+                    "seed": self.seed,
+                    "activations": self._activation_count,
+                },
+            )
+        finally:
+            self._stop_workers()
+
+    def _start_workers(self) -> None:
+        """Start all agent workers."""
+
+        for worker in self._workers.values():
+            worker.start()
+
+    def _stop_workers(self) -> None:
+        """Stop all agent workers cleanly."""
+
+        for worker in self._workers.values():
+            worker.inbox.put(None)
+        for worker in self._workers.values():
+            worker.join()
+
+    def _handle_activation(self, agent_id: int) -> AlgorithmStepResult:
+        """Run one algorithm activation under the shared algorithm lock."""
+
+        with self._algorithm_lock:
+            return self.algorithm.on_async_activation(agent_id)
+
+    def _handle_message(self, message: AlgorithmMessage) -> AlgorithmStepResult:
+        """Handle one algorithm message under the shared algorithm lock."""
+
+        with self._algorithm_lock:
+            return self.algorithm.handle_async_message(message)
+
+    def _activate_agent(self, agent_id: int) -> None:
+        """Schedule and wait for one agent activation."""
+
+        work = _AsyncWorkItem(kind="activation", agent_id=agent_id)
+        result = self._submit_and_wait(work)
+        self._activation_count += 1
+        self._deliver_messages(self._extract_messages(result))
+
+    def _deliver_messages(self, messages: list[AlgorithmMessage]) -> None:
+        """Deliver algorithm messages through receiver inboxes in order."""
+
+        pending = list(messages)
+        while pending:
+            message = pending.pop(0)
+            if message.receiver not in self._workers:
+                raise ValueError(f"Invalid async message receiver: {message.receiver}.")
+
+            work = _AsyncWorkItem(
+                kind="message",
+                agent_id=message.receiver,
+                message=message,
+            )
+            result = self._submit_and_wait(work)
+            self._total_messages += 1
+            pending.extend(self._extract_messages(result))
+
+    def _submit_and_wait(self, work: _AsyncWorkItem) -> AlgorithmStepResult:
+        """Submit one work item to its worker and wait for the acknowledgement."""
+
+        self._workers[work.agent_id].inbox.put(work)
+        result = self._done_queue.get()
+
+        if result.error is not None:
+            raise RuntimeError(
+                f"Asynchronous worker failed while processing {work.kind} "
+                f"for agent {work.agent_id}."
+            ) from result.error
+        if result.step_result is None:
+            raise RuntimeError("Asynchronous worker returned no step result.")
+
+        return result.step_result
+
+    @staticmethod
+    def _extract_messages(step_result: AlgorithmStepResult) -> list[AlgorithmMessage]:
+        """Extract generated messages from algorithm result metadata."""
+
+        raw_messages = step_result.metadata.get("messages", [])
+        if not isinstance(raw_messages, list):
+            raise ValueError("Algorithm result metadata field 'messages' must be a list.")
+        if any(not isinstance(message, AlgorithmMessage) for message in raw_messages):
+            raise ValueError("Algorithm result metadata contains a non-message item.")
+
+        return list(raw_messages)
