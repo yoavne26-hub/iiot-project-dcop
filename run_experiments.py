@@ -1,4 +1,4 @@
-"""Minimal CLI runner for synchronous DSA-C smoke experiments."""
+"""Minimal CLI runner for DCOP smoke experiments."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import csv
 from pathlib import Path
 
 from backend.algorithms.dsa_c import DSACAlgorithm
+from backend.algorithms.mgm import MGMAlgorithm
 from backend.dcop.cost import calculate_global_cost
 from backend.dcop.generator import generate_random_dcop
 from backend.simulators.asynchronous import AsynchronousSimulator
@@ -17,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
 
     parser = argparse.ArgumentParser(
-        description="Run one generated DCOP problem with synchronous DSA-C."
+        description="Run one generated DCOP problem with a selected algorithm."
     )
     parser.add_argument("--agents", type=int, default=50)
     parser.add_argument("--domain-size", type=int, default=10)
@@ -26,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iterations", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dsa-probability", type=float, default=0.75)
+    parser.add_argument("--algorithm", choices=("dsa-c", "mgm"), default="dsa-c")
     parser.add_argument("--simulator", choices=("sync", "async"), default="sync")
     parser.add_argument(
         "--output",
@@ -33,6 +35,20 @@ def parse_args() -> argparse.Namespace:
         help="Path for iteration,cost CSV output.",
     )
     return parser.parse_args()
+
+
+def build_algorithm(args: argparse.Namespace) -> DSACAlgorithm | MGMAlgorithm:
+    """Build the selected algorithm."""
+
+    if args.algorithm == "dsa-c":
+        return DSACAlgorithm(
+            probability=args.dsa_probability,
+            seed=args.seed,
+        )
+    if args.algorithm == "mgm":
+        return MGMAlgorithm(seed=args.seed)
+
+    raise ValueError(f"Unsupported algorithm: {args.algorithm}.")
 
 
 def write_cost_history_csv(path: Path, cost_history: list[int]) -> None:
@@ -59,10 +75,7 @@ def main() -> None:
     )
     initial_cost = calculate_global_cost(problem, problem.initial_assignment)
 
-    algorithm = DSACAlgorithm(
-        probability=args.dsa_probability,
-        seed=args.seed,
-    )
+    algorithm = build_algorithm(args)
     simulator_class = (
         SynchronousSimulator if args.simulator == "sync" else AsynchronousSimulator
     )
@@ -76,7 +89,8 @@ def main() -> None:
     final_cost = result.cost_history[-1]
     best_cost = min(result.cost_history)
 
-    output_path = Path(args.output or f"results/dsa_c_{args.simulator}_smoke.csv")
+    algorithm_slug = args.algorithm.replace("-", "_")
+    output_path = Path(args.output or f"results/{algorithm_slug}_{args.simulator}_smoke.csv")
     write_cost_history_csv(output_path, result.cost_history)
 
     print("Problem summary")
@@ -85,6 +99,7 @@ def main() -> None:
     print(f"  constraints: {len(problem.constraints)}")
     print(f"  initial cost: {initial_cost}")
     print("Run summary")
+    print(f"  algorithm: {args.algorithm}")
     print(f"  simulator: {args.simulator}")
     print(f"  final cost: {final_cost}")
     print(f"  best cost: {best_cost}")
