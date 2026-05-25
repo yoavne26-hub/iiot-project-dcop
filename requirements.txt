@@ -1,3 +1,2 @@
-# This project currently has no third-party Python dependencies.
-# It uses only the Python standard library, including tkinter for the GUI.
+matplotlib>=3.8
 

@@ -12,6 +12,15 @@ from backend.algorithms.mgm import MGMAlgorithm
 from backend.algorithms.mgm2 import MGM2Algorithm
 from backend.dcop.cost import calculate_global_cost
 from backend.dcop.generator import generate_random_dcop
+from backend.experiments.plotting import write_average_cost_plots
+from backend.experiments.results import write_experiment_csvs
+from backend.experiments.runner import (
+    SUPPORTED_ALGORITHMS,
+    SUPPORTED_SIMULATORS,
+    ExperimentConfig,
+    parse_name_list,
+    run_full_experiment,
+)
 from backend.simulators.asynchronous import AsynchronousSimulator
 from backend.simulators.synchronous import SynchronousSimulator
 
@@ -22,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run one generated DCOP problem with a selected algorithm."
     )
+    parser.add_argument("--mode", choices=("smoke", "full"), default="smoke")
     parser.add_argument("--agents", type=int, default=50)
     parser.add_argument("--domain-size", type=int, default=10)
     parser.add_argument("--max-cost", type=int, default=100)
@@ -36,6 +46,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--simulator", choices=("sync", "async"), default="sync")
     parser.add_argument("--dms-damping", type=float, default=0.5)
+    parser.add_argument("--problems", type=int, default=50)
+    parser.add_argument("--algorithms", default="dsa-c,mgm,mgm2,dms")
+    parser.add_argument("--simulators", default="sync,async")
+    parser.add_argument("--output-dir", default="results")
+    parser.add_argument("--no-plots", action="store_true")
     parser.add_argument(
         "--output",
         default=None,
@@ -79,9 +94,18 @@ def write_cost_history_csv(path: Path, cost_history: list[int]) -> None:
 
 
 def main() -> None:
-    """Run a single synchronous DSA-C experiment."""
+    """Run smoke or full experiment mode."""
 
     args = parse_args()
+    if args.mode == "full":
+        run_full_mode(args)
+    else:
+        run_smoke_mode(args)
+
+
+def run_smoke_mode(args: argparse.Namespace) -> None:
+    """Run a single algorithm/simulator smoke experiment."""
+
     problem = generate_random_dcop(
         num_agents=args.agents,
         constraint_probability=args.constraint_probability,
@@ -122,6 +146,65 @@ def main() -> None:
     print(f"  total messages: {result.total_messages}")
     print(f"  runtime seconds: {result.runtime_seconds:.6f}")
     print(f"  csv: {output_path}")
+
+
+def run_full_mode(args: argparse.Namespace) -> None:
+    """Run a full multi-problem experiment batch."""
+
+    algorithms = parse_name_list(args.algorithms, SUPPORTED_ALGORITHMS, "algorithms")
+    simulators = parse_name_list(args.simulators, SUPPORTED_SIMULATORS, "simulators")
+    config = ExperimentConfig(
+        problems=args.problems,
+        agents=args.agents,
+        domain_size=args.domain_size,
+        max_cost=args.max_cost,
+        constraint_probability=args.constraint_probability,
+        iterations=args.iterations,
+        seed=args.seed,
+        algorithms=algorithms,
+        simulators=simulators,
+        dsa_probability=args.dsa_probability,
+        dms_damping=args.dms_damping,
+        output_dir=Path(args.output_dir),
+    )
+
+    print("Full experiment configuration")
+    print(f"  problems: {config.problems}")
+    print(f"  agents: {config.agents}")
+    print(f"  domain size: {config.domain_size}")
+    print(f"  max cost: {config.max_cost}")
+    print(f"  constraint probability: {config.constraint_probability}")
+    print(f"  iterations: {config.iterations}")
+    print(f"  seed: {config.seed}")
+    print(f"  algorithms: {', '.join(config.algorithms)}")
+    print(f"  simulators: {', '.join(config.simulators)}")
+
+    output = run_full_experiment(config)
+    csv_paths = write_experiment_csvs(output)
+    print("CSV outputs")
+    for label, path in csv_paths.items():
+        print(f"  {label}: {path}")
+
+    if args.no_plots:
+        print("Plots skipped because --no-plots was passed.")
+    else:
+        try:
+            plot_paths = write_average_cost_plots(
+                average_rows=output.average_rows,
+                output_dir=config.output_dir,
+                simulators=config.simulators,
+            )
+        except RuntimeError as error:
+            print(error)
+        else:
+            print("Plot outputs")
+            for simulator_name, path in plot_paths.items():
+                print(f"  {simulator_name}: {path}")
+
+    print("Run summary")
+    print(f"  raw rows: {len(output.raw_rows)}")
+    print(f"  summary rows: {len(output.summary_rows)}")
+    print(f"  average rows: {len(output.average_rows)}")
 
 
 if __name__ == "__main__":
