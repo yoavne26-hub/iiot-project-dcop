@@ -154,7 +154,7 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
     for simulator_name in config.simulators:
         for algorithm_name in config.algorithms:
             accumulator_key = (simulator_name, algorithm_name)
-            average_accumulator[accumulator_key] = [0.0] * config.iterations
+            average_accumulator[accumulator_key] = [0.0] * (config.iterations + 1)
             average_counts[accumulator_key] = 0
 
             for problem_index, (problem_seed, problem) in enumerate(problems):
@@ -180,6 +180,18 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
                 result = simulator.run()
                 initial_cost = calculate_global_cost(problem, problem.initial_assignment)
 
+                raw_rows.append(
+                    RawRunRow(
+                        simulator=simulator_name,
+                        algorithm=algorithm_name,
+                        problem_index=problem_index,
+                        problem_seed=problem_seed,
+                        iteration=0,
+                        cost=initial_cost,
+                    )
+                )
+                average_accumulator[accumulator_key][0] += initial_cost
+
                 for iteration, cost in enumerate(result.cost_history, start=1):
                     raw_rows.append(
                         RawRunRow(
@@ -191,7 +203,7 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
                             cost=cost,
                         )
                     )
-                    average_accumulator[accumulator_key][iteration - 1] += cost
+                    average_accumulator[accumulator_key][iteration] += cost
 
                 average_counts[accumulator_key] += 1
                 summary_rows.append(
@@ -202,7 +214,8 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
                         problem_seed=problem_seed,
                         initial_cost=initial_cost,
                         final_cost=result.cost_history[-1],
-                        best_cost=min(result.cost_history),
+                        # Include the explicit iteration 0 baseline in best cost.
+                        best_cost=min(initial_cost, *result.cost_history),
                         total_messages=result.total_messages,
                         runtime_seconds=result.runtime_seconds,
                     )
@@ -229,7 +242,6 @@ def _build_average_rows(
         count = average_counts[(simulator_name, algorithm_name)]
         for iteration, total_cost in enumerate(
             average_accumulator[(simulator_name, algorithm_name)],
-            start=1,
         ):
             rows.append(
                 AverageCostRow(
