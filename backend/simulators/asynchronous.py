@@ -18,22 +18,26 @@ from backend.dcop.problem import DCOPProblem
 from backend.simulators.synchronous import SimulationRunResult
 
 
-@dataclass
-class _AsyncWorkItem:
-    """One unit of worker-thread work."""
+@dataclass(frozen=True)
+class _AsyncActivationEvent:
+    """One asynchronous activation for one agent."""
 
-    kind: str
     agent_id: int
-    message: AlgorithmMessage | None = None
 
 
-@dataclass
-class _AsyncWorkResult:
-    """Worker result returned to the simulator controller."""
+@dataclass(frozen=True)
+class _AsyncMessageEvent:
+    """One asynchronous algorithm message delivered to a receiver inbox."""
 
-    work: _AsyncWorkItem
-    step_result: AlgorithmStepResult | None = None
-    error: Exception | None = None
+    message: AlgorithmMessage
+
+
+@dataclass(frozen=True)
+class _AsyncStopEvent:
+    """Worker shutdown sentinel."""
+
+
+_AsyncEvent = _AsyncActivationEvent | _AsyncMessageEvent | _AsyncStopEvent
 
 
 class _AsyncAgentWorker(threading.Thread):
@@ -43,36 +47,24 @@ class _AsyncAgentWorker(threading.Thread):
         super().__init__(name=f"DCOPAsyncAgent-{agent_id}", daemon=True)
         self.agent_id = agent_id
         self.simulator = simulator
-        self.inbox: queue.Queue[_AsyncWorkItem | None] = queue.Queue()
+        self.inbox: queue.Queue[_AsyncEvent] = queue.Queue()
 
     def run(self) -> None:
         """Process queued activations and messages until stopped."""
 
         while True:
-            work = self.inbox.get()
-            if work is None:
-                return
-
+            event = self.inbox.get()
             try:
-                if work.kind == "activation":
-                    step_result = self.simulator._handle_activation(work.agent_id)
-                elif work.kind == "message":
-                    if work.message is None:
-                        raise ValueError("Message work item is missing its message.")
-                    step_result = self.simulator._handle_message(work.message)
-                else:
-                    raise ValueError(f"Unsupported async work kind: {work.kind}.")
-                self.simulator._done_queue.put(
-                    _AsyncWorkResult(work=work, step_result=step_result)
-                )
+                if isinstance(event, _AsyncStopEvent) or self.simulator._stop_event.is_set():
+                    return
+                self.simulator._process_worker_event(self.agent_id, event)
             except Exception as error:
-                self.simulator._done_queue.put(
-                    _AsyncWorkResult(work=work, error=error)
-                )
+                self.simulator._record_worker_error(self.agent_id, event, error)
+                return
 
 
 class AsynchronousSimulator:
-    """Run a distributed algorithm through worker inboxes and messages."""
+    """Run a distributed algorithm through independent worker inboxes."""
 
     def __init__(
         self,
@@ -88,20 +80,42 @@ class AsynchronousSimulator:
         self.algorithm = algorithm
         self.iterations = iterations
         self.seed = seed
+        self._checkpoint_size = problem.num_agents
+        self._activation_backlog_limit = max(1, 2 * problem.num_agents)
+
         self._scheduler_rng = random.Random(seed)
         self._algorithm_lock = threading.Lock()
-        self._done_queue: queue.Queue[_AsyncWorkResult] = queue.Queue()
+        self._state_condition = threading.Condition(threading.RLock())
+        self._stop_event = threading.Event()
+        self._worker_error: tuple[int, _AsyncEvent, Exception] | None = None
+        self._scheduler_thread: threading.Thread | None = None
+
         self._workers = {
             agent_id: _AsyncAgentWorker(agent_id=agent_id, simulator=self)
             for agent_id in range(problem.num_agents)
         }
-        self._total_messages = 0
-        self._activation_count = 0
+
+        self._lamport_clocks = {
+            agent_id: 0 for agent_id in range(problem.num_agents)
+        }
+        self._sender_sequences = {
+            agent_id: 0 for agent_id in range(problem.num_agents)
+        }
+        self._latest_sequence_by_receiver = {
+            agent_id: {} for agent_id in range(problem.num_agents)
+        }
+
+        self._processed_async_events = 0
+        self._activations_injected = 0
+        self._pending_activations = 0
+        self._messages_delivered = 0
+        self._stale_messages_ignored = 0
 
     def run(self) -> SimulationRunResult:
         """Run asynchronous measurement checkpoints and collect global costs."""
 
         started_at = time.perf_counter()
+        cost_history: list[int] = []
         self._start_workers()
 
         try:
@@ -113,31 +127,37 @@ class AsynchronousSimulator:
                 )
                 initial_messages = self.algorithm.initial_async_messages()
 
-            self._deliver_messages(initial_messages)
+            self._enqueue_messages(initial_messages)
+            self._start_scheduler()
 
-            cost_history: list[int] = []
-            for _ in range(self.iterations):
-                # This is not a synchronized communication round. It is a
-                # measurement checkpoint that keeps async cost histories
-                # comparable to synchronous cost histories.
-                #
-                # During one checkpoint, every agent is activated once in an
-                # order randomized by the simulator seed. Messages generated by
-                # each activation are delivered immediately through worker
-                # inboxes and are not intentionally delayed until checkpoint
-                # end. The controller only waits for the scheduled activation
-                # and its resulting message chain to finish before recording
-                # the checkpoint cost; this must not be interpreted as batching
-                # updates into a synchronous round.
-                agent_order = list(range(self.problem.num_agents))
-                self._scheduler_rng.shuffle(agent_order)
+            # Async iterations are measurement checkpoints, not synchronized
+            # rounds. Activations are random events injected by the scheduler,
+            # and messages flow through receiver inboxes as soon as they are
+            # sent. The checkpoint structure only gives the report one cost
+            # value per approximately num_agents processed async events so it
+            # can be plotted beside synchronous cost history; it must not be
+            # interpreted as a synchronized communication round.
+            next_checkpoint = self._checkpoint_size
+            while len(cost_history) < self.iterations:
+                with self._state_condition:
+                    self._state_condition.wait_for(
+                        lambda: (
+                            self._processed_async_events >= next_checkpoint
+                            or self._worker_error is not None
+                        )
+                    )
+                    self._raise_worker_error_if_needed()
 
-                for agent_id in agent_order:
-                    self._activate_agent(agent_id)
-
-                with self._algorithm_lock:
-                    assignment = self.algorithm.get_assignment()
-                cost_history.append(calculate_global_cost(self.problem, assignment))
+                    while (
+                        self._processed_async_events >= next_checkpoint
+                        and len(cost_history) < self.iterations
+                    ):
+                        with self._algorithm_lock:
+                            assignment = self.algorithm.get_assignment()
+                        cost_history.append(
+                            calculate_global_cost(self.problem, assignment)
+                        )
+                        next_checkpoint += self._checkpoint_size
 
             with self._algorithm_lock:
                 final_assignment = self.algorithm.get_assignment()
@@ -149,19 +169,15 @@ class AsynchronousSimulator:
                 iterations=self.iterations,
                 cost_history=cost_history,
                 final_assignment=final_assignment,
-                total_messages=self._total_messages,
+                total_messages=self._messages_delivered,
                 runtime_seconds=runtime_seconds,
-                metadata={
-                    "seed": self.seed,
-                    "activations": self._activation_count,
-                    "messages": self._total_messages,
-                    "async_iteration_definition": (
-                        "one randomized activation sweep over all agents"
-                    ),
-                    "checkpoint_size": self.problem.num_agents,
-                },
+                metadata=self._metadata(),
             )
         finally:
+            self._stop_event.set()
+            with self._state_condition:
+                self._state_condition.notify_all()
+            self._stop_scheduler()
             self._stop_workers()
 
     def _start_workers(self) -> None:
@@ -174,63 +190,220 @@ class AsynchronousSimulator:
         """Stop all agent workers cleanly."""
 
         for worker in self._workers.values():
-            worker.inbox.put(None)
+            worker.inbox.put(_AsyncStopEvent())
         for worker in self._workers.values():
             worker.join()
 
-    def _handle_activation(self, agent_id: int) -> AlgorithmStepResult:
-        """Run one algorithm activation under the shared algorithm lock."""
+    def _start_scheduler(self) -> None:
+        """Start the random activation scheduler."""
 
+        self._scheduler_thread = threading.Thread(
+            target=self._scheduler_loop,
+            name="DCOPAsyncScheduler",
+            daemon=True,
+        )
+        self._scheduler_thread.start()
+
+    def _stop_scheduler(self) -> None:
+        """Stop the random activation scheduler."""
+
+        if self._scheduler_thread is not None:
+            self._scheduler_thread.join()
+
+    def _scheduler_loop(self) -> None:
+        """Inject random activation events without waiting for their completion."""
+
+        activation_bag: list[int] = []
+        while not self._stop_event.is_set():
+            with self._state_condition:
+                self._state_condition.wait_for(
+                    lambda: (
+                        self._stop_event.is_set()
+                        or self._worker_error is not None
+                        or self._pending_activations < self._activation_backlog_limit
+                    )
+                )
+                if self._stop_event.is_set() or self._worker_error is not None:
+                    return
+
+                if not activation_bag:
+                    activation_bag = list(range(self.problem.num_agents))
+                    self._scheduler_rng.shuffle(activation_bag)
+
+                agent_id = activation_bag.pop()
+                self._workers[agent_id].inbox.put(_AsyncActivationEvent(agent_id))
+                self._activations_injected += 1
+                self._pending_activations += 1
+
+    def _process_worker_event(self, agent_id: int, event: _AsyncEvent) -> None:
+        """Process one event from one worker inbox."""
+
+        if isinstance(event, _AsyncActivationEvent):
+            step_result = self._handle_activation(event.agent_id)
+            self._enqueue_messages(self._extract_messages(step_result))
+            self._mark_event_processed(is_activation=True)
+            return
+
+        if isinstance(event, _AsyncMessageEvent):
+            step_result = self._handle_message(event.message)
+            if step_result is not None:
+                self._enqueue_messages(self._extract_messages(step_result))
+            self._mark_event_processed(is_activation=False)
+            return
+
+        raise ValueError(f"Unsupported async event for agent {agent_id}: {event!r}.")
+
+    def _handle_activation(self, agent_id: int) -> AlgorithmStepResult:
+        """Run one algorithm activation for one agent."""
+
+        self._advance_internal_clock(agent_id)
         with self._algorithm_lock:
             return self.algorithm.on_async_activation(agent_id)
 
-    def _handle_message(self, message: AlgorithmMessage) -> AlgorithmStepResult:
-        """Handle one algorithm message under the shared algorithm lock."""
+    def _handle_message(
+        self,
+        message: AlgorithmMessage,
+    ) -> AlgorithmStepResult | None:
+        """Deliver one message unless it is stale."""
+
+        self._update_receiver_clock(message)
+        if self._is_stale_message(message):
+            return None
+
+        with self._state_condition:
+            self._messages_delivered += 1
 
         with self._algorithm_lock:
             return self.algorithm.handle_async_message(message)
 
-    def _activate_agent(self, agent_id: int) -> None:
-        """Schedule and wait for one agent activation."""
+    def _enqueue_messages(self, messages: list[AlgorithmMessage]) -> None:
+        """Stamp and enqueue outgoing algorithm messages."""
 
-        work = _AsyncWorkItem(kind="activation", agent_id=agent_id)
-        result = self._submit_and_wait(work)
-        self._activation_count += 1
-        self._deliver_messages(self._extract_messages(result))
+        if self._stop_event.is_set():
+            return
 
-    def _deliver_messages(self, messages: list[AlgorithmMessage]) -> None:
-        """Deliver algorithm messages through receiver inboxes in order."""
+        for message in messages:
+            stamped = self._stamp_message(message)
+            if stamped.receiver not in self._workers:
+                raise ValueError(f"Invalid async message receiver: {stamped.receiver}.")
+            self._workers[stamped.receiver].inbox.put(_AsyncMessageEvent(stamped))
 
-        pending = list(messages)
-        while pending:
-            message = pending.pop(0)
-            if message.receiver not in self._workers:
-                raise ValueError(f"Invalid async message receiver: {message.receiver}.")
+    def _stamp_message(self, message: AlgorithmMessage) -> AlgorithmMessage:
+        """Attach simulator-owned Lamport and sender-sequence metadata."""
 
-            work = _AsyncWorkItem(
-                kind="message",
-                agent_id=message.receiver,
-                message=message,
+        if message.sender not in self._workers:
+            raise ValueError(f"Invalid async message sender: {message.sender}.")
+
+        with self._state_condition:
+            self._lamport_clocks[message.sender] += 1
+            self._sender_sequences[message.sender] += 1
+            return AlgorithmMessage(
+                sender=message.sender,
+                receiver=message.receiver,
+                kind=message.kind,
+                payload=dict(message.payload),
+                lamport_time=self._lamport_clocks[message.sender],
+                sender_sequence=self._sender_sequences[message.sender],
             )
-            result = self._submit_and_wait(work)
-            self._total_messages += 1
-            pending.extend(self._extract_messages(result))
 
-    def _submit_and_wait(self, work: _AsyncWorkItem) -> AlgorithmStepResult:
-        """Submit one work item to its worker and wait for the acknowledgement."""
+    def _advance_internal_clock(self, agent_id: int) -> None:
+        """Advance an agent Lamport clock for an internal activation event."""
 
-        self._workers[work.agent_id].inbox.put(work)
-        result = self._done_queue.get()
+        with self._state_condition:
+            self._lamport_clocks[agent_id] += 1
 
-        if result.error is not None:
-            raise RuntimeError(
-                f"Asynchronous worker failed while processing {work.kind} "
-                f"for agent {work.agent_id}."
-            ) from result.error
-        if result.step_result is None:
-            raise RuntimeError("Asynchronous worker returned no step result.")
+    def _update_receiver_clock(self, message: AlgorithmMessage) -> None:
+        """Apply Lamport receive-clock update for one message."""
 
-        return result.step_result
+        with self._state_condition:
+            current = self._lamport_clocks[message.receiver]
+            self._lamport_clocks[message.receiver] = (
+                max(current, message.lamport_time) + 1
+            )
+
+    def _is_stale_message(self, message: AlgorithmMessage) -> bool:
+        """Return True and count a message if its sender sequence is stale."""
+
+        with self._state_condition:
+            latest_by_sender = self._latest_sequence_by_receiver[message.receiver]
+            latest = latest_by_sender.get(message.sender, 0)
+            if message.sender_sequence <= latest:
+                self._stale_messages_ignored += 1
+                return True
+
+            latest_by_sender[message.sender] = message.sender_sequence
+            return False
+
+    def _mark_event_processed(self, is_activation: bool) -> None:
+        """Record one completed async event and notify waiters."""
+
+        with self._state_condition:
+            self._processed_async_events += 1
+            if is_activation:
+                self._pending_activations = max(0, self._pending_activations - 1)
+            self._state_condition.notify_all()
+
+    def _record_worker_error(
+        self,
+        agent_id: int,
+        event: _AsyncEvent,
+        error: Exception,
+    ) -> None:
+        """Store the first worker exception and wake controller threads."""
+
+        with self._state_condition:
+            if self._worker_error is None:
+                self._worker_error = (agent_id, event, error)
+            self._stop_event.set()
+            self._state_condition.notify_all()
+
+    def _raise_worker_error_if_needed(self) -> None:
+        """Raise a clear error if any worker failed."""
+
+        if self._worker_error is None:
+            return
+
+        agent_id, event, error = self._worker_error
+        raise RuntimeError(
+            f"Asynchronous worker {agent_id} failed while processing "
+            f"{self._describe_event(event)}."
+        ) from error
+
+    def _metadata(self) -> dict[str, object]:
+        """Return async execution metadata for diagnostics and reports."""
+
+        with self._state_condition:
+            lamport_max = max(self._lamport_clocks.values(), default=0)
+            return {
+                "seed": self.seed,
+                "processed_async_events": self._processed_async_events,
+                "activations_injected": self._activations_injected,
+                "messages_delivered": self._messages_delivered,
+                "messages": self._messages_delivered,
+                "lamport_max": lamport_max,
+                "async_iteration_definition": (
+                    "one measurement checkpoint per num_agents processed async events; "
+                    "not a synchronized communication round"
+                ),
+                "checkpoint_size": self._checkpoint_size,
+                "stale_messages_ignored": self._stale_messages_ignored,
+                "activation_backlog_limit": self._activation_backlog_limit,
+            }
+
+    @staticmethod
+    def _describe_event(event: _AsyncEvent) -> str:
+        """Return a concise event description for worker failure messages."""
+
+        if isinstance(event, _AsyncActivationEvent):
+            return f"activation event for agent {event.agent_id}"
+        if isinstance(event, _AsyncMessageEvent):
+            message = event.message
+            return (
+                f"message event kind={message.kind!r} "
+                f"sender={message.sender} receiver={message.receiver} "
+                f"sequence={message.sender_sequence}"
+            )
+        return type(event).__name__
 
     @staticmethod
     def _extract_messages(step_result: AlgorithmStepResult) -> list[AlgorithmMessage]:

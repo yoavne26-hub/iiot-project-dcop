@@ -16,6 +16,8 @@ class AlgorithmMessage:
     receiver: int
     kind: str
     payload: dict[str, object]
+    lamport_time: int = 0
+    sender_sequence: int = 0
 
 
 @dataclass
