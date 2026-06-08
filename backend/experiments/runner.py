@@ -221,17 +221,20 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
                     )
 
                     for average_index, iteration in enumerate(recorded_iterations):
-                        cost = result.cost_history[iteration - 1]
-                        raw_rows.append(
-                            RawRunRow(
-                                simulator=simulator_name,
-                                algorithm=algorithm_name,
-                                problem_index=problem_index,
-                                problem_seed=problem_seed,
-                                iteration=iteration,
-                                cost=cost,
+                        if iteration == 0:
+                            cost = initial_cost
+                        else:
+                            cost = result.cost_history[iteration - 1]
+                            raw_rows.append(
+                                RawRunRow(
+                                    simulator=simulator_name,
+                                    algorithm=algorithm_name,
+                                    problem_index=problem_index,
+                                    problem_seed=problem_seed,
+                                    iteration=iteration,
+                                    cost=cost,
+                                )
                             )
-                        )
                         average_accumulator[accumulator_key][average_index] += cost
 
                     average_counts[accumulator_key] += 1
@@ -328,7 +331,7 @@ def _sort_output_rows(
 def _recorded_iterations(iterations: int, plot_interval: int) -> list[int]:
     """Return the iteration numbers recorded for graphs and average CSVs."""
 
-    recorded = list(range(plot_interval, iterations + 1, plot_interval))
+    recorded = [0, *range(plot_interval, iterations + 1, plot_interval)]
     if iterations not in recorded:
         recorded.append(iterations)
     return recorded

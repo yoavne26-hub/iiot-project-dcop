@@ -20,13 +20,6 @@ from backend.simulators.synchronous import SimulationRunResult
 
 
 @dataclass(frozen=True)
-class _AsyncActivationEvent:
-    """One asynchronous activation for one agent."""
-
-    agent_id: int
-
-
-@dataclass(frozen=True)
 class _AsyncMessageEvent:
     """One asynchronous algorithm message delivered to a receiver inbox."""
 
@@ -38,7 +31,8 @@ class _AsyncStopEvent:
     """Worker shutdown sentinel."""
 
 
-_AsyncEvent = _AsyncActivationEvent | _AsyncMessageEvent | _AsyncStopEvent
+_AsyncEvent = _AsyncMessageEvent | _AsyncStopEvent
+_HEARTBEAT_KIND = "__heartbeat__"
 
 
 class _AsyncAgentWorker(threading.Thread):
@@ -83,7 +77,7 @@ class AsynchronousSimulator:
         self.iterations = iterations
         self.seed = seed
         self.progress_callback = progress_callback
-        self._activation_backlog_limit = max(1, 2 * problem.num_agents)
+        self._message_backlog_limit = max(1, 2 * problem.num_agents)
 
         self._scheduler_rng = random.Random(seed)
         self._algorithm_lock = threading.Lock()
@@ -111,8 +105,9 @@ class AsynchronousSimulator:
         }
 
         self._processed_async_events = 0
-        self._activations_injected = 0
-        self._pending_activations = 0
+        self._pending_messages = 0
+        self._heartbeat_messages_injected = 0
+        self._heartbeat_messages_delivered = 0
         self._messages_delivered = 0
         self._stale_messages_ignored = 0
 
@@ -196,62 +191,70 @@ class AsynchronousSimulator:
             worker.join()
 
     def _start_scheduler(self) -> None:
-        """Start the random activation scheduler."""
+        """Start the idle heartbeat message scheduler."""
 
         self._scheduler_thread = threading.Thread(
             target=self._scheduler_loop,
-            name="DCOPAsyncScheduler",
+            name="DCOPAsyncHeartbeatScheduler",
             daemon=True,
         )
         self._scheduler_thread.start()
 
     def _stop_scheduler(self) -> None:
-        """Stop the random activation scheduler."""
+        """Stop the idle heartbeat scheduler."""
 
         if self._scheduler_thread is not None:
             self._scheduler_thread.join()
 
     def _scheduler_loop(self) -> None:
-        """Inject random activation events without waiting for their completion."""
+        """Inject heartbeat messages only when no algorithm messages are pending."""
 
-        activation_bag: list[int] = []
         while not self._stop_event.is_set():
             with self._state_condition:
                 self._state_condition.wait_for(
                     lambda: (
                         self._stop_event.is_set()
                         or self._worker_error is not None
-                        or self._pending_activations < self._activation_backlog_limit
+                        or (
+                            self._pending_messages == 0
+                            and self._global_async_step() < self.iterations
+                        )
                     )
                 )
                 if self._stop_event.is_set() or self._worker_error is not None:
                     return
 
-                if not activation_bag:
-                    activation_bag = [
-                        agent_id
-                        for agent_id, clock in self._local_clocks.items()
-                        if clock < self.iterations
-                    ]
-                    if not activation_bag:
-                        self._stop_event.set()
-                        self._state_condition.notify_all()
-                        return
-                    self._scheduler_rng.shuffle(activation_bag)
+                candidates = [
+                    agent_id
+                    for agent_id, clock in self._local_clocks.items()
+                    if clock < self.iterations and self.problem.neighbors[agent_id]
+                ]
+                if not candidates:
+                    self._worker_error = (
+                        -1,
+                        _AsyncStopEvent(),
+                        RuntimeError(
+                            "Asynchronous simulation cannot progress because no "
+                            "agent below the iteration target has a neighbor."
+                        ),
+                    )
+                    self._stop_event.set()
+                    self._state_condition.notify_all()
+                    return
 
-                agent_id = activation_bag.pop()
-                self._workers[agent_id].inbox.put(_AsyncActivationEvent(agent_id))
-                self._activations_injected += 1
-                self._pending_activations += 1
+                min_clock = min(self._local_clocks[agent_id] for agent_id in candidates)
+                lagging_agents = [
+                    agent_id
+                    for agent_id in candidates
+                    if self._local_clocks[agent_id] == min_clock
+                ]
+                receiver = self._scheduler_rng.choice(lagging_agents)
+                sender = self._scheduler_rng.choice(self.problem.neighbors[receiver])
+
+            self._enqueue_heartbeat_message(sender=sender, receiver=receiver)
 
     def _process_worker_event(self, agent_id: int, event: _AsyncEvent) -> None:
         """Process one event from one worker inbox."""
-
-        if isinstance(event, _AsyncActivationEvent):
-            step_result = self._handle_activation(event.agent_id)
-            self._enqueue_messages(self._extract_messages(step_result))
-            self._mark_event_processed(is_activation=True)
-            return
 
         if isinstance(event, _AsyncMessageEvent):
             message_result = self._handle_message(event.message)
@@ -261,7 +264,7 @@ class AsynchronousSimulator:
                 activation_result = self._handle_activation(event.message.receiver)
                 messages.extend(self._extract_messages(activation_result))
             self._enqueue_messages(messages)
-            self._mark_event_processed(is_activation=False)
+            self._mark_event_processed()
             return
 
         raise ValueError(f"Unsupported async event for agent {agent_id}: {event!r}.")
@@ -280,6 +283,12 @@ class AsynchronousSimulator:
         """Deliver one message unless it is stale."""
 
         self._update_receiver_clock(message)
+        if message.kind == _HEARTBEAT_KIND:
+            with self._state_condition:
+                self._messages_delivered += 1
+                self._heartbeat_messages_delivered += 1
+            return AlgorithmStepResult(changed_agents=set(), messages_sent=0)
+
         if self._is_stale_message(message):
             return None
 
@@ -299,7 +308,28 @@ class AsynchronousSimulator:
             stamped = self._stamp_message(message)
             if stamped.receiver not in self._workers:
                 raise ValueError(f"Invalid async message receiver: {stamped.receiver}.")
-            self._workers[stamped.receiver].inbox.put(_AsyncMessageEvent(stamped))
+            self._enqueue_message_event(stamped)
+
+    def _enqueue_heartbeat_message(self, sender: int, receiver: int) -> None:
+        """Enqueue a simulator heartbeat message that can trigger one activation."""
+
+        message = AlgorithmMessage(
+            sender=sender,
+            receiver=receiver,
+            kind=_HEARTBEAT_KIND,
+            payload={},
+        )
+        stamped = self._stamp_message(message)
+        with self._state_condition:
+            self._heartbeat_messages_injected += 1
+        self._enqueue_message_event(stamped)
+
+    def _enqueue_message_event(self, message: AlgorithmMessage) -> None:
+        """Place one message event in a receiver inbox and count it as pending."""
+
+        with self._state_condition:
+            self._pending_messages += 1
+        self._workers[message.receiver].inbox.put(_AsyncMessageEvent(message))
 
     def _stamp_message(self, message: AlgorithmMessage) -> AlgorithmMessage:
         """Attach simulator-owned Lamport and sender-sequence metadata."""
@@ -348,13 +378,12 @@ class AsynchronousSimulator:
             latest_by_sender[message.sender] = message.sender_sequence
             return False
 
-    def _mark_event_processed(self, is_activation: bool) -> None:
+    def _mark_event_processed(self) -> None:
         """Record one completed async event and notify waiters."""
 
         with self._state_condition:
             self._processed_async_events += 1
-            if is_activation:
-                self._pending_activations = max(0, self._pending_activations - 1)
+            self._pending_messages = max(0, self._pending_messages - 1)
             self._state_condition.notify_all()
 
     def _record_worker_error(
@@ -391,9 +420,10 @@ class AsynchronousSimulator:
             return {
                 "seed": self.seed,
                 "processed_async_events": self._processed_async_events,
-                "activations_injected": self._activations_injected,
                 "messages_delivered": self._messages_delivered,
                 "messages": self._messages_delivered,
+                "heartbeat_messages_injected": self._heartbeat_messages_injected,
+                "heartbeat_messages_delivered": self._heartbeat_messages_delivered,
                 "lamport_max": lamport_max,
                 "global_async_step": self._global_async_step(),
                 "min_local_clock": self._global_async_step(),
@@ -403,7 +433,7 @@ class AsynchronousSimulator:
                     "run stops when global_async_step reaches the configured iteration limit"
                 ),
                 "stale_messages_ignored": self._stale_messages_ignored,
-                "activation_backlog_limit": self._activation_backlog_limit,
+                "message_backlog_limit": self._message_backlog_limit,
             }
 
     def _global_async_step(self) -> int:
@@ -415,8 +445,6 @@ class AsynchronousSimulator:
     def _describe_event(event: _AsyncEvent) -> str:
         """Return a concise event description for worker failure messages."""
 
-        if isinstance(event, _AsyncActivationEvent):
-            return f"activation event for agent {event.agent_id}"
         if isinstance(event, _AsyncMessageEvent):
             message = event.message
             return (

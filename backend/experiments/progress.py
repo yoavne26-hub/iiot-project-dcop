@@ -50,11 +50,18 @@ class ExperimentProgress:
             TaskProgressColumn(),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
+            transient=True,
+            refresh_per_second=5,
         )
         self._progress.start()
         self._problems_task = self._progress.add_task(
             "Problems",
             total=self.total_problems,
+        )
+        self._run_task = self._progress.add_task(
+            "Current run",
+            total=self.total_iterations,
+            visible=False,
         )
         return self
 
@@ -73,20 +80,15 @@ class ExperimentProgress:
         if self._progress is None:
             return
 
-        description = f"{simulator} / {algorithm}  problem {problem_index + 1}"
-        if self._run_task is None:
-            self._run_task = self._progress.add_task(
-                description,
-                total=self.total_iterations,
-            )
-        else:
-            self._progress.reset(
-                self._run_task,
-                total=self.total_iterations,
-                completed=0,
-                description=description,
-            )
-            self._progress.start_task(self._run_task)
+        description = f"Current run   {simulator} / {algorithm} problem {problem_index + 1}"
+        self._progress.update(
+            self._run_task,
+            description=description,
+            total=self.total_iterations,
+            completed=0,
+            visible=True,
+        )
+        self._progress.start_task(self._run_task)
 
     def update_run(self, completed_iterations: int) -> None:
         """Update the current run task to an absolute completed iteration count."""
@@ -105,6 +107,7 @@ class ExperimentProgress:
 
         self._progress.update(self._run_task, completed=self.total_iterations)
         self._progress.stop_task(self._run_task)
+        self._progress.update(self._run_task, visible=False)
 
     def finish_problem(self) -> None:
         """Advance the overall problem progress by one completed problem."""
