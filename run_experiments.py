@@ -68,6 +68,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--simulators", default="sync,async")
     parser.add_argument("--plot-interval", type=int, default=DEFAULT_PLOT_INTERVAL)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument(
         "--output",
@@ -185,6 +186,7 @@ def run_full_mode(args: argparse.Namespace) -> None:
         dms_damping=args.dms_damping,
         plot_interval=args.plot_interval,
         output_dir=Path(args.output_dir),
+        progress_enabled=not args.no_progress,
     )
 
     print("Full experiment configuration")

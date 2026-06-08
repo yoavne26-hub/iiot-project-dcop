@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 import time
 
@@ -33,6 +34,7 @@ class SynchronousSimulator:
         algorithm: DistributedAlgorithm,
         iterations: int,
         seed: int | None = None,
+        progress_callback: Callable[[int], None] | None = None,
     ) -> None:
         if iterations <= 0:
             raise ValueError("iterations must be greater than 0.")
@@ -41,6 +43,7 @@ class SynchronousSimulator:
         self.algorithm = algorithm
         self.iterations = iterations
         self.seed = seed
+        self.progress_callback = progress_callback
 
     def run(self) -> SimulationRunResult:
         """Run the configured algorithm and collect cost history."""
@@ -55,11 +58,13 @@ class SynchronousSimulator:
         cost_history: list[int] = []
         total_messages = 0
 
-        for _ in range(self.iterations):
+        for iteration in range(1, self.iterations + 1):
             step_result = self.algorithm.run_synchronous_iteration()
             assignment = self.algorithm.get_assignment()
             cost_history.append(calculate_global_cost(self.problem, assignment))
             total_messages += step_result.messages_sent
+            if self.progress_callback is not None:
+                self.progress_callback(iteration)
 
         runtime_seconds = time.perf_counter() - started_at
 

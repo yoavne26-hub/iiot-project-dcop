@@ -43,7 +43,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-The only external dependency is matplotlib for PNG graph output.
+External dependencies are matplotlib for PNG graph output and Rich for terminal progress bars.
 
 ## Run
 
@@ -52,6 +52,8 @@ Run the default full experiment:
 ```powershell
 python main.py
 ```
+
+This shows Rich progress bars for overall problem completion and the current algorithm/simulator run.
 
 Equivalent direct command:
 
@@ -72,7 +74,20 @@ python main.py --constraint-probability 0.3
 python main.py --problems 50 --agents 50 --iterations 1000
 python main.py --algorithms dsa-c,mgm,mgm2,dms --simulators sync,async
 python main.py --output-dir results
+python main.py --no-progress
 python main.py --no-plots
+```
+
+Example with progress enabled:
+
+```powershell
+python main.py --mode full --problems 50 --agents 50 --iterations 1000
+```
+
+Example with progress disabled for CI or logs:
+
+```powershell
+python main.py --mode full --problems 50 --agents 50 --iterations 1000 --no-progress
 ```
 
 ## Outputs
@@ -126,6 +141,7 @@ backend/
     synchronous.py
     asynchronous.py
   experiments/
+    progress.py
     runner.py
     results.py
     plotting.py

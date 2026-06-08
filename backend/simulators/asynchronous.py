@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import queue
 import random
@@ -72,6 +73,7 @@ class AsynchronousSimulator:
         algorithm: DistributedAlgorithm,
         iterations: int,
         seed: int | None = None,
+        progress_callback: Callable[[int], None] | None = None,
     ) -> None:
         if iterations <= 0:
             raise ValueError("iterations must be greater than 0.")
@@ -80,6 +82,7 @@ class AsynchronousSimulator:
         self.algorithm = algorithm
         self.iterations = iterations
         self.seed = seed
+        self.progress_callback = progress_callback
         self._activation_backlog_limit = max(1, 2 * problem.num_agents)
 
         self._scheduler_rng = random.Random(seed)
@@ -154,6 +157,8 @@ class AsynchronousSimulator:
                         cost_history.append(
                             calculate_global_cost(self.problem, assignment)
                         )
+                        if self.progress_callback is not None:
+                            self.progress_callback(len(cost_history))
 
             with self._algorithm_lock:
                 final_assignment = self.algorithm.get_assignment()

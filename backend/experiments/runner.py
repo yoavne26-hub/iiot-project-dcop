@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 from pathlib import Path
@@ -19,6 +20,7 @@ from backend.experiments.results import (
     RawRunRow,
     SummaryRow,
 )
+from backend.experiments.progress import ExperimentProgress
 from backend.simulators.asynchronous import AsynchronousSimulator
 from backend.simulators.synchronous import SynchronousSimulator
 
@@ -44,6 +46,7 @@ class ExperimentConfig:
     dms_damping: float
     plot_interval: int
     output_dir: Path
+    progress_enabled: bool = True
 
 
 def stable_run_seed(
@@ -85,6 +88,7 @@ def build_simulator(
     algorithm: DMSAlgorithm | DSACAlgorithm | MGMAlgorithm | MGM2Algorithm,
     iterations: int,
     seed: int,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> SynchronousSimulator | AsynchronousSimulator:
     """Build one simulator instance for one run."""
 
@@ -94,6 +98,7 @@ def build_simulator(
             algorithm=algorithm,
             iterations=iterations,
             seed=seed,
+            progress_callback=progress_callback,
         )
     if simulator_name == "async":
         return AsynchronousSimulator(
@@ -101,6 +106,7 @@ def build_simulator(
             algorithm=algorithm,
             iterations=iterations,
             seed=seed,
+            progress_callback=progress_callback,
         )
 
     raise ValueError(f"Unsupported simulator: {simulator_name}.")
@@ -164,70 +170,94 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
             average_accumulator[accumulator_key] = [0.0] * len(recorded_iterations)
             average_counts[accumulator_key] = 0
 
-            for problem_index, (problem_seed, problem) in enumerate(problems):
-                run_seed = stable_run_seed(
-                    master_seed=config.seed,
-                    problem_index=problem_index,
-                    algorithm=algorithm_name,
-                    simulator=simulator_name,
-                )
-                algorithm = build_algorithm(
-                    algorithm_name=algorithm_name,
-                    dsa_probability=config.dsa_probability,
-                    dms_damping=config.dms_damping,
-                    seed=run_seed,
-                )
-                simulator = build_simulator(
-                    simulator_name=simulator_name,
-                    problem=problem,
-                    algorithm=algorithm,
-                    iterations=config.iterations,
-                    seed=run_seed,
-                )
-                result = simulator.run()
-                initial_cost = calculate_global_cost(problem, problem.initial_assignment)
+    with ExperimentProgress(
+        enabled=config.progress_enabled,
+        total_problems=config.problems,
+        total_iterations=config.iterations,
+    ) as progress:
+        for problem_index, (problem_seed, problem) in enumerate(problems):
+            initial_cost = calculate_global_cost(problem, problem.initial_assignment)
 
-                raw_rows.append(
-                    RawRunRow(
+            for simulator_name in config.simulators:
+                for algorithm_name in config.algorithms:
+                    accumulator_key = (simulator_name, algorithm_name)
+                    run_seed = stable_run_seed(
+                        master_seed=config.seed,
+                        problem_index=problem_index,
+                        algorithm=algorithm_name,
+                        simulator=simulator_name,
+                    )
+                    algorithm = build_algorithm(
+                        algorithm_name=algorithm_name,
+                        dsa_probability=config.dsa_probability,
+                        dms_damping=config.dms_damping,
+                        seed=run_seed,
+                    )
+                    progress.start_run(
                         simulator=simulator_name,
                         algorithm=algorithm_name,
                         problem_index=problem_index,
-                        problem_seed=problem_seed,
-                        iteration=0,
-                        cost=initial_cost,
                     )
-                )
+                    simulator = build_simulator(
+                        simulator_name=simulator_name,
+                        problem=problem,
+                        algorithm=algorithm,
+                        iterations=config.iterations,
+                        seed=run_seed,
+                        progress_callback=progress.update_run,
+                    )
+                    result = simulator.run()
+                    progress.finish_run()
 
-                for average_index, iteration in enumerate(recorded_iterations):
-                    cost = result.cost_history[iteration - 1]
                     raw_rows.append(
                         RawRunRow(
                             simulator=simulator_name,
                             algorithm=algorithm_name,
                             problem_index=problem_index,
                             problem_seed=problem_seed,
-                            iteration=iteration,
-                            cost=cost,
+                            iteration=0,
+                            cost=initial_cost,
                         )
                     )
-                    average_accumulator[accumulator_key][average_index] += cost
 
-                average_counts[accumulator_key] += 1
-                summary_rows.append(
-                    SummaryRow(
-                        simulator=simulator_name,
-                        algorithm=algorithm_name,
-                        problem_index=problem_index,
-                        problem_seed=problem_seed,
-                        initial_cost=initial_cost,
-                        final_cost=result.cost_history[-1],
-                        # Include the explicit iteration 0 baseline in best cost.
-                        best_cost=min(initial_cost, *result.cost_history),
-                        total_messages=result.total_messages,
-                        runtime_seconds=result.runtime_seconds,
+                    for average_index, iteration in enumerate(recorded_iterations):
+                        cost = result.cost_history[iteration - 1]
+                        raw_rows.append(
+                            RawRunRow(
+                                simulator=simulator_name,
+                                algorithm=algorithm_name,
+                                problem_index=problem_index,
+                                problem_seed=problem_seed,
+                                iteration=iteration,
+                                cost=cost,
+                            )
+                        )
+                        average_accumulator[accumulator_key][average_index] += cost
+
+                    average_counts[accumulator_key] += 1
+                    summary_rows.append(
+                        SummaryRow(
+                            simulator=simulator_name,
+                            algorithm=algorithm_name,
+                            problem_index=problem_index,
+                            problem_seed=problem_seed,
+                            initial_cost=initial_cost,
+                            final_cost=result.cost_history[-1],
+                            # Include the explicit iteration 0 baseline in best cost.
+                            best_cost=min(initial_cost, *result.cost_history),
+                            total_messages=result.total_messages,
+                            runtime_seconds=result.runtime_seconds,
+                        )
                     )
-                )
 
+            progress.finish_problem()
+
+    _sort_output_rows(
+        raw_rows=raw_rows,
+        summary_rows=summary_rows,
+        simulators=config.simulators,
+        algorithms=config.algorithms,
+    )
     average_rows = _build_average_rows(
         average_accumulator,
         average_counts,
@@ -266,6 +296,33 @@ def _build_average_rows(
             )
 
     return rows
+
+
+def _sort_output_rows(
+    raw_rows: list[RawRunRow],
+    summary_rows: list[SummaryRow],
+    simulators: tuple[str, ...],
+    algorithms: tuple[str, ...],
+) -> None:
+    """Keep CSV output row ordering stable regardless of execution order."""
+
+    simulator_order = {name: index for index, name in enumerate(simulators)}
+    algorithm_order = {name: index for index, name in enumerate(algorithms)}
+    raw_rows.sort(
+        key=lambda row: (
+            simulator_order[row.simulator],
+            algorithm_order[row.algorithm],
+            row.problem_index,
+            row.iteration,
+        )
+    )
+    summary_rows.sort(
+        key=lambda row: (
+            simulator_order[row.simulator],
+            algorithm_order[row.algorithm],
+            row.problem_index,
+        )
+    )
 
 
 def _recorded_iterations(iterations: int, plot_interval: int) -> list[int]:
