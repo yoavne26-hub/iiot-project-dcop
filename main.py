@@ -1,12 +1,12 @@
-"""Launch the IIOT visual simulator."""
+"""Run Assignment 2 DCOP experiments from the command line."""
 
-from frontend.visualizer import launch_app
+from run_experiments import main as run_experiments_main
 
 
 def main() -> None:
-    """Start the desktop application."""
+    """Start the CLI experiment runner."""
 
-    launch_app()
+    run_experiments_main()
 
 
 if __name__ == "__main__":

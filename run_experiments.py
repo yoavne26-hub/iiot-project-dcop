@@ -6,6 +6,19 @@ import argparse
 import csv
 from pathlib import Path
 
+from backend.config import (
+    DEFAULT_AGENTS,
+    DEFAULT_CONSTRAINT_PROBABILITY,
+    DEFAULT_DMS_DAMPING,
+    DEFAULT_DOMAIN_SIZE,
+    DEFAULT_DSA_PROBABILITY,
+    DEFAULT_ITERATIONS,
+    DEFAULT_MAX_COST,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_PLOT_INTERVAL,
+    DEFAULT_PROBLEMS,
+    DEFAULT_SEED,
+)
 from backend.algorithms.dms import DMSAlgorithm
 from backend.algorithms.dsa_c import DSACAlgorithm
 from backend.algorithms.mgm import MGMAlgorithm
@@ -31,25 +44,30 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run one generated DCOP problem with a selected algorithm."
     )
-    parser.add_argument("--mode", choices=("smoke", "full"), default="smoke")
-    parser.add_argument("--agents", type=int, default=50)
-    parser.add_argument("--domain-size", type=int, default=10)
-    parser.add_argument("--max-cost", type=int, default=100)
-    parser.add_argument("--constraint-probability", type=float, default=0.3)
-    parser.add_argument("--iterations", type=int, default=1000)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--dsa-probability", type=float, default=0.75)
+    parser.add_argument("--mode", choices=("smoke", "full"), default="full")
+    parser.add_argument("--agents", type=int, default=DEFAULT_AGENTS)
+    parser.add_argument("--domain-size", type=int, default=DEFAULT_DOMAIN_SIZE)
+    parser.add_argument("--max-cost", type=int, default=DEFAULT_MAX_COST)
+    parser.add_argument(
+        "--constraint-probability",
+        type=float,
+        default=DEFAULT_CONSTRAINT_PROBABILITY,
+    )
+    parser.add_argument("--iterations", type=int, default=DEFAULT_ITERATIONS)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
+    parser.add_argument("--dsa-probability", type=float, default=DEFAULT_DSA_PROBABILITY)
     parser.add_argument(
         "--algorithm",
         choices=("dsa-c", "mgm", "mgm2", "dms"),
         default="dsa-c",
     )
     parser.add_argument("--simulator", choices=("sync", "async"), default="sync")
-    parser.add_argument("--dms-damping", type=float, default=0.5)
-    parser.add_argument("--problems", type=int, default=50)
+    parser.add_argument("--dms-damping", type=float, default=DEFAULT_DMS_DAMPING)
+    parser.add_argument("--problems", type=int, default=DEFAULT_PROBLEMS)
     parser.add_argument("--algorithms", default="dsa-c,mgm,mgm2,dms")
     parser.add_argument("--simulators", default="sync,async")
-    parser.add_argument("--output-dir", default="results")
+    parser.add_argument("--plot-interval", type=int, default=DEFAULT_PLOT_INTERVAL)
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument(
         "--output",
@@ -165,6 +183,7 @@ def run_full_mode(args: argparse.Namespace) -> None:
         simulators=simulators,
         dsa_probability=args.dsa_probability,
         dms_damping=args.dms_damping,
+        plot_interval=args.plot_interval,
         output_dir=Path(args.output_dir),
     )
 
@@ -175,6 +194,7 @@ def run_full_mode(args: argparse.Namespace) -> None:
     print(f"  max cost: {config.max_cost}")
     print(f"  constraint probability: {config.constraint_probability}")
     print(f"  iterations: {config.iterations}")
+    print(f"  plot interval: {config.plot_interval}")
     print(f"  seed: {config.seed}")
     print(f"  algorithms: {', '.join(config.algorithms)}")
     print(f"  simulators: {', '.join(config.simulators)}")

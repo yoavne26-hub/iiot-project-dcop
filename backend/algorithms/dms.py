@@ -18,7 +18,7 @@ class DMSAlgorithm(DistributedAlgorithm):
 
     name = "dms"
 
-    def __init__(self, damping: float = 0.5, seed: int | None = None) -> None:
+    def __init__(self, damping: float = 0.9, seed: int | None = None) -> None:
         if not 0 <= damping < 1:
             raise ValueError("damping must be greater than or equal to 0 and less than 1.")
 

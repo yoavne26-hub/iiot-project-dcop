@@ -10,7 +10,7 @@ The final system must support:
 
 * A random DCOP problem generator.
 * Synchronous simulation.
-* Asynchronous simulation based on the Assignment 1 idea, where agents operate through message passing and threaded/asynchronous behavior.
+* Asynchronous simulation, where agents operate through message passing and threaded/asynchronous behavior.
 * Four algorithms:
 
   * DSA-C
@@ -20,7 +20,6 @@ The final system must support:
 * A CLI experiment runner.
 * CSV result files.
 * Two graph images for the report.
-* GUI visualization later, but GUI is not the first priority.
 
 ## Assignment Requirements
 
@@ -35,7 +34,7 @@ The experiment configuration for the final report must support:
 * Constraint costs between 1 and 100.
 * 1000 iterations.
 * DSA-C probability: 0.75.
-* DMS damping factor: 0.5.
+* DMS damping factor: 0.9.
 * Constraint probability must be a user input.
 * Seeds must control both problem generation and initial assignments.
 
@@ -59,27 +58,17 @@ Build the project in this order:
 12. DMS.
 13. CSV exports.
 14. Plot generation.
-15. GUI adaptation.
-
-Do not begin with the GUI. Keep GUI code if useful, but the report graphs and CLI runner come first.
+15. Documentation cleanup.
 
 ## Expected Commands
 
-The project should eventually support:
+The project should support:
 
 ```bash
-python run_experiments.py
+python main.py
 ```
 
 for CLI experiments.
-
-Later, the project should support:
-
-```bash
-python main.py --gui
-```
-
-for visualization.
 
 ## Architecture Guidelines
 
@@ -87,7 +76,7 @@ Keep the design modular.
 
 The DCOP problem model should not depend on any specific algorithm.
 
-The algorithms should not directly depend on Tkinter or plotting.
+The algorithms should not directly depend on plotting.
 
 The simulators should control timing and message delivery.
 
@@ -130,9 +119,6 @@ backend/
     runner.py
     results.py
     plotting.py
-
-frontend/
-  visualizer.py
 
 run_experiments.py
 main.py
@@ -185,8 +171,6 @@ For final report graphs:
 
 ## Asynchronous Simulator Notes
 
-The asynchronous simulator must remain conceptually connected to Assignment 1.
-
 Use agents, messages, and asynchronous/threaded behavior.
 
 However, the output must still be compatible with the experiment runner:
@@ -199,10 +183,6 @@ However, the output must still be compatible with the experiment runner:
 When possible, keep asynchronous behavior controlled enough for reproducible comparison through seeds.
 
 ## Do Not Do
-
-Do not remove useful Assignment 1 code before understanding it.
-
-Do not mix GUI logic into algorithm logic.
 
 Do not hard-code final experiment parameters in the algorithms.
 

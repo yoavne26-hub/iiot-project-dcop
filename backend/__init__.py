@@ -1,1 +1,1 @@
-"""Backend package for the Tkinter simulation engine."""
+"""Backend package for Assignment 2 DCOP experiments."""

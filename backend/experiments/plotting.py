@@ -48,7 +48,6 @@ def write_average_cost_plots(
                 by_algorithm[algorithm_name],
                 key=lambda row: row.iteration,
             )
-            # Iteration 0 is an explicit shared initial-assignment baseline.
             plt.plot(
                 [row.iteration for row in algorithm_rows],
                 [row.average_cost for row in algorithm_rows],

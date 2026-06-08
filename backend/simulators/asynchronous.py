@@ -80,7 +80,6 @@ class AsynchronousSimulator:
         self.algorithm = algorithm
         self.iterations = iterations
         self.seed = seed
-        self._checkpoint_size = problem.num_agents
         self._activation_backlog_limit = max(1, 2 * problem.num_agents)
 
         self._scheduler_rng = random.Random(seed)
@@ -103,6 +102,9 @@ class AsynchronousSimulator:
         }
         self._latest_sequence_by_receiver = {
             agent_id: {} for agent_id in range(problem.num_agents)
+        }
+        self._local_clocks = {
+            agent_id: 0 for agent_id in range(problem.num_agents)
         }
 
         self._processed_async_events = 0
@@ -130,26 +132,21 @@ class AsynchronousSimulator:
             self._enqueue_messages(initial_messages)
             self._start_scheduler()
 
-            # Async iterations are measurement checkpoints, not synchronized
-            # rounds. Activations are random events injected by the scheduler,
-            # and messages flow through receiver inboxes as soon as they are
-            # sent. The checkpoint structure only gives the report one cost
-            # value per approximately num_agents processed async events so it
-            # can be plotted beside synchronous cost history; it must not be
-            # interpreted as a synchronized communication round.
-            next_checkpoint = self._checkpoint_size
+            # Async iterations use the course clarification's global progress
+            # definition: each agent owns a local logical clock, and the global
+            # async step is the minimum local clock across all agents.
             while len(cost_history) < self.iterations:
                 with self._state_condition:
                     self._state_condition.wait_for(
                         lambda: (
-                            self._processed_async_events >= next_checkpoint
+                            self._global_async_step() > len(cost_history)
                             or self._worker_error is not None
                         )
                     )
                     self._raise_worker_error_if_needed()
 
                     while (
-                        self._processed_async_events >= next_checkpoint
+                        self._global_async_step() > len(cost_history)
                         and len(cost_history) < self.iterations
                     ):
                         with self._algorithm_lock:
@@ -157,7 +154,6 @@ class AsynchronousSimulator:
                         cost_history.append(
                             calculate_global_cost(self.problem, assignment)
                         )
-                        next_checkpoint += self._checkpoint_size
 
             with self._algorithm_lock:
                 final_assignment = self.algorithm.get_assignment()
@@ -227,7 +223,15 @@ class AsynchronousSimulator:
                     return
 
                 if not activation_bag:
-                    activation_bag = list(range(self.problem.num_agents))
+                    activation_bag = [
+                        agent_id
+                        for agent_id, clock in self._local_clocks.items()
+                        if clock < self.iterations
+                    ]
+                    if not activation_bag:
+                        self._stop_event.set()
+                        self._state_condition.notify_all()
+                        return
                     self._scheduler_rng.shuffle(activation_bag)
 
                 agent_id = activation_bag.pop()
@@ -245,9 +249,13 @@ class AsynchronousSimulator:
             return
 
         if isinstance(event, _AsyncMessageEvent):
-            step_result = self._handle_message(event.message)
-            if step_result is not None:
-                self._enqueue_messages(self._extract_messages(step_result))
+            message_result = self._handle_message(event.message)
+            messages: list[AlgorithmMessage] = []
+            if message_result is not None:
+                messages.extend(self._extract_messages(message_result))
+                activation_result = self._handle_activation(event.message.receiver)
+                messages.extend(self._extract_messages(activation_result))
+            self._enqueue_messages(messages)
             self._mark_event_processed(is_activation=False)
             return
 
@@ -311,6 +319,7 @@ class AsynchronousSimulator:
 
         with self._state_condition:
             self._lamport_clocks[agent_id] += 1
+            self._local_clocks[agent_id] += 1
 
     def _update_receiver_clock(self, message: AlgorithmMessage) -> None:
         """Apply Lamport receive-clock update for one message."""
@@ -381,14 +390,21 @@ class AsynchronousSimulator:
                 "messages_delivered": self._messages_delivered,
                 "messages": self._messages_delivered,
                 "lamport_max": lamport_max,
+                "global_async_step": self._global_async_step(),
+                "min_local_clock": self._global_async_step(),
+                "local_clocks": dict(self._local_clocks),
                 "async_iteration_definition": (
-                    "one measurement checkpoint per num_agents processed async events; "
-                    "not a synchronized communication round"
+                    "global_async_step = min(agent.local_clock for all agents); "
+                    "run stops when global_async_step reaches the configured iteration limit"
                 ),
-                "checkpoint_size": self._checkpoint_size,
                 "stale_messages_ignored": self._stale_messages_ignored,
                 "activation_backlog_limit": self._activation_backlog_limit,
             }
+
+    def _global_async_step(self) -> int:
+        """Return the Lamport-style global async step used for measurement."""
+
+        return min(self._local_clocks.values(), default=0)
 
     @staticmethod
     def _describe_event(event: _AsyncEvent) -> str:

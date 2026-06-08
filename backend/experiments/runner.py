@@ -42,6 +42,7 @@ class ExperimentConfig:
     simulators: tuple[str, ...]
     dsa_probability: float
     dms_damping: float
+    plot_interval: int
     output_dir: Path
 
 
@@ -144,8 +145,14 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
 
     if config.problems <= 0:
         raise ValueError("problems must be greater than 0.")
+    if config.plot_interval <= 0:
+        raise ValueError("plot_interval must be greater than 0.")
 
     problems = generate_problem_set(config)
+    recorded_iterations = _recorded_iterations(
+        iterations=config.iterations,
+        plot_interval=config.plot_interval,
+    )
     raw_rows: list[RawRunRow] = []
     summary_rows: list[SummaryRow] = []
     average_accumulator: dict[tuple[str, str], list[float]] = {}
@@ -154,7 +161,7 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
     for simulator_name in config.simulators:
         for algorithm_name in config.algorithms:
             accumulator_key = (simulator_name, algorithm_name)
-            average_accumulator[accumulator_key] = [0.0] * (config.iterations + 1)
+            average_accumulator[accumulator_key] = [0.0] * len(recorded_iterations)
             average_counts[accumulator_key] = 0
 
             for problem_index, (problem_seed, problem) in enumerate(problems):
@@ -190,9 +197,9 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
                         cost=initial_cost,
                     )
                 )
-                average_accumulator[accumulator_key][0] += initial_cost
 
-                for iteration, cost in enumerate(result.cost_history, start=1):
+                for average_index, iteration in enumerate(recorded_iterations):
+                    cost = result.cost_history[iteration - 1]
                     raw_rows.append(
                         RawRunRow(
                             simulator=simulator_name,
@@ -203,7 +210,7 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
                             cost=cost,
                         )
                     )
-                    average_accumulator[accumulator_key][iteration] += cost
+                    average_accumulator[accumulator_key][average_index] += cost
 
                 average_counts[accumulator_key] += 1
                 summary_rows.append(
@@ -221,7 +228,11 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
                     )
                 )
 
-    average_rows = _build_average_rows(average_accumulator, average_counts)
+    average_rows = _build_average_rows(
+        average_accumulator,
+        average_counts,
+        recorded_iterations,
+    )
     return ExperimentOutput(
         raw_rows=raw_rows,
         summary_rows=summary_rows,
@@ -233,6 +244,7 @@ def run_full_experiment(config: ExperimentConfig) -> ExperimentOutput:
 def _build_average_rows(
     average_accumulator: dict[tuple[str, str], list[float]],
     average_counts: dict[tuple[str, str], int],
+    recorded_iterations: list[int],
 ) -> list[AverageCostRow]:
     """Build average-cost rows from accumulated iteration sums."""
 
@@ -240,7 +252,8 @@ def _build_average_rows(
 
     for simulator_name, algorithm_name in sorted(average_accumulator):
         count = average_counts[(simulator_name, algorithm_name)]
-        for iteration, total_cost in enumerate(
+        for iteration, total_cost in zip(
+            recorded_iterations,
             average_accumulator[(simulator_name, algorithm_name)],
         ):
             rows.append(
@@ -253,3 +266,12 @@ def _build_average_rows(
             )
 
     return rows
+
+
+def _recorded_iterations(iterations: int, plot_interval: int) -> list[int]:
+    """Return the iteration numbers recorded for graphs and average CSVs."""
+
+    recorded = list(range(plot_interval, iterations + 1, plot_interval))
+    if iterations not in recorded:
+        recorded.append(iterations)
+    return recorded

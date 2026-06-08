@@ -1,8 +1,16 @@
-"""Configuration values used across the project.
-
-These are simple placeholders for later phases of the assignment.
-"""
+"""Default configuration for Assignment 2 DCOP experiments."""
 
 DEFAULT_SEED = 42
-MAX_ITERATIONS = 100
-ASYNC_QUEUE_TIMEOUT = 1.0
+
+DEFAULT_PROBLEMS = 50
+DEFAULT_AGENTS = 50
+DEFAULT_DOMAIN_SIZE = 10
+DEFAULT_MAX_COST = 100
+DEFAULT_CONSTRAINT_PROBABILITY = 0.3
+DEFAULT_ITERATIONS = 1000
+DEFAULT_PLOT_INTERVAL = 5
+
+DEFAULT_DSA_PROBABILITY = 0.75
+DEFAULT_DMS_DAMPING = 0.9
+
+DEFAULT_OUTPUT_DIR = "results"

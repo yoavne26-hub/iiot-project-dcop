@@ -80,4 +80,45 @@ def write_experiment_csvs(output: ExperimentOutput) -> dict[str, Path]:
     write_rows_csv(paths["raw"], output.raw_rows)
     write_rows_csv(paths["summary"], output.summary_rows)
     write_rows_csv(paths["average"], output.average_rows)
+    paths.update(write_simulator_average_csvs(output))
+    return paths
+
+
+def write_simulator_average_csvs(output: ExperimentOutput) -> dict[str, Path]:
+    """Write one wide average-cost CSV per simulator for plotting/report use."""
+
+    simulator_labels = {
+        "sync": "synchronous",
+        "async": "asynchronous",
+    }
+    paths: dict[str, Path] = {}
+
+    for simulator_name, simulator_label in simulator_labels.items():
+        rows = [row for row in output.average_rows if row.simulator == simulator_name]
+        if not rows:
+            continue
+
+        algorithms = sorted({row.algorithm for row in rows})
+        iterations = sorted({row.iteration for row in rows})
+        values = {
+            (row.iteration, row.algorithm): row.average_cost
+            for row in rows
+        }
+        path = output.output_dir / f"{simulator_label}_average_cost.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow(["iteration", *algorithms])
+            for iteration in iterations:
+                writer.writerow(
+                    [
+                        iteration,
+                        *[
+                            values.get((iteration, algorithm), "")
+                            for algorithm in algorithms
+                        ],
+                    ]
+                )
+        paths[f"{simulator_name}_average_wide"] = path
+
     return paths
