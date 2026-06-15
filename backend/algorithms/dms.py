@@ -168,7 +168,7 @@ class DMSAlgorithm(DistributedAlgorithm):
                     )
                 )
 
-        changed_agents = self._update_assignment_from_beliefs()
+        changed_agents = self._update_single_assignment_from_belief(agent_id)
         return AlgorithmStepResult(
             changed_agents=changed_agents,
             messages_sent=len(messages),
@@ -285,6 +285,19 @@ class DMSAlgorithm(DistributedAlgorithm):
 
         self._assignment = updated_assignment
         return changed_agents
+
+    def _update_single_assignment_from_belief(self, agent_id: int) -> set[int]:
+        """Update only one variable assignment from its current belief."""
+
+        problem = self._require_problem()
+        belief = self._belief(agent_id)
+        best_value = min(range(problem.domain_size), key=lambda value: belief[value])
+
+        if self._assignment[agent_id] == best_value:
+            return set()
+
+        self._assignment[agent_id] = best_value
+        return {agent_id}
 
     def _belief(self, agent_id: int) -> MessageVector:
         """Return the belief vector for one variable."""

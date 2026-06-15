@@ -150,13 +150,14 @@ class DSACAlgorithm(DistributedAlgorithm):
                 best_value = candidate_value
                 best_cost = candidate_cost
 
-        if best_cost >= current_cost or self._rng.random() >= self.probability:
-            return AlgorithmStepResult(changed_agents=set(), messages_sent=0)
+        changed_agents: set[int] = set()
+        if best_cost < current_cost and self._rng.random() < self.probability:
+            self._assignment[agent_id] = best_value
+            changed_agents.add(agent_id)
 
-        self._assignment[agent_id] = best_value
         messages = self._build_value_messages(agent_id)
         return AlgorithmStepResult(
-            changed_agents={agent_id},
+            changed_agents=changed_agents,
             messages_sent=len(messages),
             metadata={
                 "messages": messages,

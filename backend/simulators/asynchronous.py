@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 import queue
-import random
 import threading
 import time
 
@@ -32,7 +31,6 @@ class _AsyncStopEvent:
 
 
 _AsyncEvent = _AsyncMessageEvent | _AsyncStopEvent
-_HEARTBEAT_KIND = "__heartbeat__"
 
 
 class _AsyncAgentWorker(threading.Thread):
@@ -79,12 +77,10 @@ class AsynchronousSimulator:
         self.progress_callback = progress_callback
         self._message_backlog_limit = max(1, 2 * problem.num_agents)
 
-        self._scheduler_rng = random.Random(seed)
         self._algorithm_lock = threading.Lock()
         self._state_condition = threading.Condition(threading.RLock())
         self._stop_event = threading.Event()
         self._worker_error: tuple[int, _AsyncEvent, Exception] | None = None
-        self._scheduler_thread: threading.Thread | None = None
 
         self._workers = {
             agent_id: _AsyncAgentWorker(agent_id=agent_id, simulator=self)
@@ -106,8 +102,6 @@ class AsynchronousSimulator:
 
         self._processed_async_events = 0
         self._pending_messages = 0
-        self._heartbeat_messages_injected = 0
-        self._heartbeat_messages_delivered = 0
         self._messages_delivered = 0
         self._stale_messages_ignored = 0
 
@@ -128,7 +122,6 @@ class AsynchronousSimulator:
                 initial_messages = self.algorithm.initial_async_messages()
 
             self._enqueue_messages(initial_messages)
-            self._start_scheduler()
 
             # Async iterations use the course clarification's global progress
             # definition: each agent owns a local logical clock, and the global
@@ -138,10 +131,12 @@ class AsynchronousSimulator:
                     self._state_condition.wait_for(
                         lambda: (
                             self._global_async_step() > len(cost_history)
+                            or self._pending_messages == 0
                             or self._worker_error is not None
                         )
                     )
                     self._raise_worker_error_if_needed()
+                    self._raise_deadlock_if_needed(len(cost_history))
 
                     while (
                         self._global_async_step() > len(cost_history)
@@ -173,7 +168,6 @@ class AsynchronousSimulator:
             self._stop_event.set()
             with self._state_condition:
                 self._state_condition.notify_all()
-            self._stop_scheduler()
             self._stop_workers()
 
     def _start_workers(self) -> None:
@@ -189,69 +183,6 @@ class AsynchronousSimulator:
             worker.inbox.put(_AsyncStopEvent())
         for worker in self._workers.values():
             worker.join()
-
-    def _start_scheduler(self) -> None:
-        """Start the idle heartbeat message scheduler."""
-
-        self._scheduler_thread = threading.Thread(
-            target=self._scheduler_loop,
-            name="DCOPAsyncHeartbeatScheduler",
-            daemon=True,
-        )
-        self._scheduler_thread.start()
-
-    def _stop_scheduler(self) -> None:
-        """Stop the idle heartbeat scheduler."""
-
-        if self._scheduler_thread is not None:
-            self._scheduler_thread.join()
-
-    def _scheduler_loop(self) -> None:
-        """Inject heartbeat messages only when no algorithm messages are pending."""
-
-        while not self._stop_event.is_set():
-            with self._state_condition:
-                self._state_condition.wait_for(
-                    lambda: (
-                        self._stop_event.is_set()
-                        or self._worker_error is not None
-                        or (
-                            self._pending_messages == 0
-                            and self._global_async_step() < self.iterations
-                        )
-                    )
-                )
-                if self._stop_event.is_set() or self._worker_error is not None:
-                    return
-
-                candidates = [
-                    agent_id
-                    for agent_id, clock in self._local_clocks.items()
-                    if clock < self.iterations and self.problem.neighbors[agent_id]
-                ]
-                if not candidates:
-                    self._worker_error = (
-                        -1,
-                        _AsyncStopEvent(),
-                        RuntimeError(
-                            "Asynchronous simulation cannot progress because no "
-                            "agent below the iteration target has a neighbor."
-                        ),
-                    )
-                    self._stop_event.set()
-                    self._state_condition.notify_all()
-                    return
-
-                min_clock = min(self._local_clocks[agent_id] for agent_id in candidates)
-                lagging_agents = [
-                    agent_id
-                    for agent_id in candidates
-                    if self._local_clocks[agent_id] == min_clock
-                ]
-                receiver = self._scheduler_rng.choice(lagging_agents)
-                sender = self._scheduler_rng.choice(self.problem.neighbors[receiver])
-
-            self._enqueue_heartbeat_message(sender=sender, receiver=receiver)
 
     def _process_worker_event(self, agent_id: int, event: _AsyncEvent) -> None:
         """Process one event from one worker inbox."""
@@ -283,12 +214,6 @@ class AsynchronousSimulator:
         """Deliver one message unless it is stale."""
 
         self._update_receiver_clock(message)
-        if message.kind == _HEARTBEAT_KIND:
-            with self._state_condition:
-                self._messages_delivered += 1
-                self._heartbeat_messages_delivered += 1
-            return AlgorithmStepResult(changed_agents=set(), messages_sent=0)
-
         if self._is_stale_message(message):
             return None
 
@@ -309,20 +234,6 @@ class AsynchronousSimulator:
             if stamped.receiver not in self._workers:
                 raise ValueError(f"Invalid async message receiver: {stamped.receiver}.")
             self._enqueue_message_event(stamped)
-
-    def _enqueue_heartbeat_message(self, sender: int, receiver: int) -> None:
-        """Enqueue a simulator heartbeat message that can trigger one activation."""
-
-        message = AlgorithmMessage(
-            sender=sender,
-            receiver=receiver,
-            kind=_HEARTBEAT_KIND,
-            payload={},
-        )
-        stamped = self._stamp_message(message)
-        with self._state_condition:
-            self._heartbeat_messages_injected += 1
-        self._enqueue_message_event(stamped)
 
     def _enqueue_message_event(self, message: AlgorithmMessage) -> None:
         """Place one message event in a receiver inbox and count it as pending."""
@@ -412,6 +323,20 @@ class AsynchronousSimulator:
             f"{self._describe_event(event)}."
         ) from error
 
+    def _raise_deadlock_if_needed(self, completed_iterations: int) -> None:
+        """Fail clearly if real algorithm messages stop before the target step."""
+
+        if (
+            completed_iterations < self.iterations
+            and self._global_async_step() <= completed_iterations
+            and self._pending_messages == 0
+        ):
+            raise RuntimeError(
+                "Asynchronous simulation cannot progress because there are no "
+                "pending real algorithm messages. Check that every async activation "
+                "sends valid neighbor messages and that every agent has a neighbor."
+            )
+
     def _metadata(self) -> dict[str, object]:
         """Return async execution metadata for diagnostics and reports."""
 
@@ -422,8 +347,6 @@ class AsynchronousSimulator:
                 "processed_async_events": self._processed_async_events,
                 "messages_delivered": self._messages_delivered,
                 "messages": self._messages_delivered,
-                "heartbeat_messages_injected": self._heartbeat_messages_injected,
-                "heartbeat_messages_delivered": self._heartbeat_messages_delivered,
                 "lamport_max": lamport_max,
                 "global_async_step": self._global_async_step(),
                 "min_local_clock": self._global_async_step(),
