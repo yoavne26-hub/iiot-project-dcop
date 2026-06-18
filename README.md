@@ -6,9 +6,7 @@ for solving randomly generated **Distributed Constraint Optimization Problems
 
 This document is a self-contained research write-up: it defines the problem,
 explains *how and why* each algorithm works, presents the experimental results as
-graphs, analyses each graph, and explains *why we see the behaviour we see*. It
-also validates the implementation against a reference implementation
-(`examples/exampleCode.py`) on identical problem instances.
+graphs, analyses each graph, and explains *why we see the behaviour we see*.
 
 > **TL;DR.** The three *local-search* algorithms (DSA‑C, MGM, MGM‑2) converge
 > within ~20 iterations to a good local optimum (≈ 44–46 % cost reduction). The
