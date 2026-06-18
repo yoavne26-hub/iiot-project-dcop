@@ -33,7 +33,7 @@ The experiment configuration for the final report must support:
 * Binary constraints.
 * Constraint costs between 1 and 100.
 * 1000 iterations.
-* DSA-C probability: 0.75.
+* DSA-C probability: 0.70.
 * DMS damping factor: 0.9.
 * Constraint probability must be a user input.
 * Seeds must control both problem generation and initial assignments.

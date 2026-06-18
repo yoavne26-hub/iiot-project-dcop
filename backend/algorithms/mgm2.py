@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 
-from backend.algorithms.base import (
-    AlgorithmMessage,
-    AlgorithmStepResult,
-    DistributedAlgorithm,
-)
+from backend.algorithms.base import AlgorithmStepResult, DistributedAlgorithm
 from backend.dcop.cost import calculate_local_cost
 from backend.dcop.problem import BinaryConstraint, DCOPProblem
+
+
+DEFAULT_OFFER_PROBABILITY = 0.50
 
 
 @dataclass(frozen=True)
@@ -23,17 +23,39 @@ class _MoveCandidate:
     gain: int
 
 
+@dataclass
+class _Group:
+    """A committed MGM-2 move group (a singleton or an accepted pair)."""
+
+    members: tuple[int, ...]
+    gain: int
+    values: dict[int, int]
+
+    @property
+    def leader(self) -> int:
+        """Return the group leader, defined as the lowest member id."""
+
+        return min(self.members)
+
+
 class MGM2Algorithm(DistributedAlgorithm):
-    """Deterministic practical MGM-2 algorithm."""
+    """Randomized MGM-2 with offering, pair coordination, and damping-free gains."""
 
     name = "mgm2"
 
-    def __init__(self, seed: int | None = None) -> None:
+    def __init__(
+        self,
+        offer_probability: float = DEFAULT_OFFER_PROBABILITY,
+        seed: int | None = None,
+    ) -> None:
+        if not 0 <= offer_probability <= 1:
+            raise ValueError("offer_probability must be between 0 and 1.")
+
+        self.offer_probability = offer_probability
         self.seed = seed
+        self._rng = random.Random(seed)
         self._problem: DCOPProblem | None = None
         self._assignment: dict[int, int] = {}
-        self._local_views: dict[int, dict[int, int]] = {}
-        self._neighbor_candidates: dict[int, dict[int, _MoveCandidate]] = {}
 
     def initialize(
         self,
@@ -44,44 +66,37 @@ class MGM2Algorithm(DistributedAlgorithm):
         """Initialize MGM-2 state from the provided assignment."""
 
         problem.validate_assignment(assignment)
+        rng_seed = self.seed if seed is None else seed
+
         self._problem = problem
         self._assignment = dict(assignment)
-        self._local_views = {
-            agent_id: {} for agent_id in range(problem.num_agents)
-        }
-        self._neighbor_candidates = {
-            agent_id: {} for agent_id in range(problem.num_agents)
-        }
+        self._rng = random.Random(rng_seed)
 
     def run_synchronous_iteration(self) -> AlgorithmStepResult:
-        """Run one synchronous MGM-2 iteration."""
+        """Run one randomized synchronous MGM-2 iteration.
+
+        Mirrors the reference algorithm: agents offer to a random neighbor with
+        ``offer_probability``; each non-offering receiver accepts its best-gain
+        proposal to form a pair; unpaired agents fall back to a singleton 1-opt
+        move; every improving group commits when it has the highest gain among
+        neighboring groups, with ties broken by the lower group leader id.
+        """
 
         problem = self._require_problem()
         starting_assignment = dict(self._assignment)
-        candidates: list[_MoveCandidate] = []
 
-        for agent_id in range(problem.num_agents):
-            single_candidate = self._compute_sync_single_candidate(
-                agent_id,
-                starting_assignment,
-            )
-            if single_candidate.gain > 0:
-                candidates.append(single_candidate)
+        proposed_to = self._collect_offers(problem)
+        groups = self._build_groups(problem, starting_assignment, proposed_to)
+        group_of = {
+            member: group for group in groups for member in group.members
+        }
+        winning_groups = self._select_winning_groups(problem, groups, group_of)
 
-        for constraint in problem.constraints.values():
-            pair_candidate = self._compute_sync_pair_candidate(
-                constraint,
-                starting_assignment,
-            )
-            if pair_candidate.gain > 0:
-                candidates.append(pair_candidate)
-
-        selected_moves = self._select_non_conflicting_moves(candidates)
         changed_agents: set[int] = set()
-        if selected_moves:
+        if winning_groups:
             updated_assignment = dict(starting_assignment)
-            for move in selected_moves:
-                for agent_id, value in move.values.items():
+            for group in winning_groups:
+                for agent_id, value in group.values.items():
                     if updated_assignment[agent_id] != value:
                         changed_agents.add(agent_id)
                         updated_assignment[agent_id] = value
@@ -92,8 +107,9 @@ class MGM2Algorithm(DistributedAlgorithm):
             changed_agents=changed_agents,
             messages_sent=3 * sum_degrees,
             metadata={
-                "candidate_moves": len(candidates),
-                "selected_moves": len(selected_moves),
+                "groups": len(groups),
+                "winning_groups": len(winning_groups),
+                "pairs": sum(1 for group in groups if len(group.members) == 2),
             },
         )
 
@@ -102,79 +118,126 @@ class MGM2Algorithm(DistributedAlgorithm):
 
         return dict(self._assignment)
 
-    def initial_async_messages(self) -> list[AlgorithmMessage]:
-        """Broadcast every agent's initial value to its neighbors."""
-
-        problem = self._require_problem()
-        messages: list[AlgorithmMessage] = []
-        for agent_id in range(problem.num_agents):
-            messages.extend(self._build_value_messages(agent_id))
-
-        return messages
-
-    def handle_async_message(self, message: AlgorithmMessage) -> AlgorithmStepResult:
-        """Handle asynchronous value and MGM-2 candidate messages."""
-
-        problem = self._require_problem()
-        if message.receiver not in range(problem.num_agents):
-            raise ValueError(f"Invalid message receiver: {message.receiver}.")
-        if message.sender not in problem.neighbors[message.receiver]:
-            raise ValueError(
-                f"Agent {message.sender} is not a neighbor of agent {message.receiver}."
-            )
-
-        if message.kind == "value":
-            value = message.payload.get("value")
-            if not isinstance(value, int) or not 0 <= value < problem.domain_size:
-                raise ValueError("MGM-2 value messages must contain an in-domain integer value.")
-            self._local_views[message.receiver][message.sender] = value
-            return AlgorithmStepResult(changed_agents=set(), messages_sent=0)
-
-        if message.kind == "mgm2_candidate":
-            candidate = self._candidate_from_payload(message.payload)
-            self._neighbor_candidates[message.receiver][message.sender] = candidate
-            return AlgorithmStepResult(changed_agents=set(), messages_sent=0)
-
-        raise ValueError(f"Unsupported MGM-2 message kind: {message.kind}.")
-
-    def on_async_activation(self, agent_id: int) -> AlgorithmStepResult:
-        """Run one practical asynchronous MGM-2 activation."""
-
-        problem = self._require_problem()
-        if not 0 <= agent_id < problem.num_agents:
-            raise ValueError(f"agent_id must be in 0..{problem.num_agents - 1}.")
-
-        candidate = self._best_async_candidate_for_agent(agent_id)
-        messages = self._build_candidate_messages(agent_id, candidate)
-        changed_agents: set[int] = set()
-
-        if candidate.gain > 0 and self._wins_against_known_neighbor_candidates(
-            candidate,
-            agent_id,
-        ):
-            for changed_agent, value in candidate.values.items():
-                if self._assignment[changed_agent] != value:
-                    self._assignment[changed_agent] = value
-                    changed_agents.add(changed_agent)
-            for changed_agent in sorted(changed_agents):
-                messages.extend(self._build_value_messages(changed_agent))
-
-        return AlgorithmStepResult(
-            changed_agents=changed_agents,
-            messages_sent=len(messages),
-            metadata={
-                "messages": messages,
-                "candidate_gain": candidate.gain,
-                "candidate_kind": candidate.kind,
-            },
-        )
-
     def _require_problem(self) -> DCOPProblem:
         """Return the initialized problem or fail clearly."""
 
         if self._problem is None:
             raise RuntimeError("MGM2Algorithm must be initialized before running.")
         return self._problem
+
+    def _collect_offers(self, problem: DCOPProblem) -> dict[int, int]:
+        """Pick, per offering agent, the random neighbor it proposes to."""
+
+        proposed_to: dict[int, int] = {}
+        for agent_id in range(problem.num_agents):
+            neighbors = problem.neighbors[agent_id]
+            if neighbors and self._rng.random() < self.offer_probability:
+                proposed_to[agent_id] = self._rng.choice(neighbors)
+
+        return proposed_to
+
+    def _build_groups(
+        self,
+        problem: DCOPProblem,
+        assignment: dict[int, int],
+        proposed_to: dict[int, int],
+    ) -> list[_Group]:
+        """Form accepted pair groups and singleton groups for the rest."""
+
+        proposals_by_receiver: dict[int, list[int]] = {
+            agent_id: [] for agent_id in range(problem.num_agents)
+        }
+        for proposer, receiver in proposed_to.items():
+            proposals_by_receiver[receiver].append(proposer)
+
+        groups: list[_Group] = []
+        paired: set[int] = set()
+
+        # Only non-offering agents accept proposals; an offering agent rejects.
+        for receiver in range(problem.num_agents):
+            if receiver in proposed_to:
+                continue
+
+            incoming = proposals_by_receiver[receiver]
+            best_proposer: int | None = None
+            best_candidate: _MoveCandidate | None = None
+            best_score: tuple[int, int] = (-1, 0)
+            for proposer in incoming:
+                constraint = problem.constraints[
+                    (min(proposer, receiver), max(proposer, receiver))
+                ]
+                pair_candidate = self._compute_sync_pair_candidate(constraint, assignment)
+                # Highest gain wins; ties break to the lower proposer id.
+                score = (pair_candidate.gain, -proposer)
+                if best_proposer is None or score > best_score:
+                    best_score = score
+                    best_proposer = proposer
+                    best_candidate = pair_candidate
+
+            if best_candidate is None:
+                continue
+
+            members = tuple(sorted((best_proposer, receiver)))
+            groups.append(
+                _Group(
+                    members=members,
+                    gain=best_candidate.gain,
+                    values=dict(best_candidate.values),
+                )
+            )
+            paired.add(best_proposer)
+            paired.add(receiver)
+
+        # Every agent without a partner competes with a singleton 1-opt move.
+        for agent_id in range(problem.num_agents):
+            if agent_id in paired:
+                continue
+            single = self._compute_sync_single_candidate(agent_id, assignment)
+            groups.append(
+                _Group(
+                    members=(agent_id,),
+                    gain=single.gain,
+                    values=dict(single.values),
+                )
+            )
+
+        return groups
+
+    def _select_winning_groups(
+        self,
+        problem: DCOPProblem,
+        groups: list[_Group],
+        group_of: dict[int, _Group],
+    ) -> list[_Group]:
+        """Select improving groups that dominate their neighboring groups."""
+
+        winning: list[_Group] = []
+        for group in groups:
+            if group.gain <= 0:
+                continue
+
+            members = set(group.members)
+            neighbor_agents: set[int] = set()
+            for member in members:
+                neighbor_agents.update(problem.neighbors[member])
+            neighbor_agents.difference_update(members)
+
+            wins = True
+            for neighbor in neighbor_agents:
+                neighbor_group = group_of[neighbor]
+                if neighbor_group is group:
+                    continue
+                if neighbor_group.gain > group.gain:
+                    wins = False
+                    break
+                if neighbor_group.gain == group.gain and neighbor_group.leader < group.leader:
+                    wins = False
+                    break
+
+            if wins:
+                winning.append(group)
+
+        return winning
 
     def _compute_sync_single_candidate(
         self,
@@ -263,19 +326,6 @@ class MGM2Algorithm(DistributedAlgorithm):
             gain=gain,
         )
 
-    def _best_async_candidate_for_agent(self, agent_id: int) -> _MoveCandidate:
-        """Return the best locally visible candidate involving one agent."""
-
-        problem = self._require_problem()
-        assignment = self._assignment_with_local_view(agent_id)
-        candidates = [self._compute_sync_single_candidate(agent_id, assignment)]
-
-        for neighbor_id in problem.neighbors[agent_id]:
-            constraint = problem.constraints[(min(agent_id, neighbor_id), max(agent_id, neighbor_id))]
-            candidates.append(self._compute_sync_pair_candidate(constraint, assignment))
-
-        return min(candidates, key=self._priority_key)
-
     def _affected_cost(
         self,
         agents: tuple[int, ...],
@@ -303,147 +353,3 @@ class MGM2Algorithm(DistributedAlgorithm):
             total += constraint.cost(value_a, value_b)
 
         return total
-
-    def _select_non_conflicting_moves(
-        self,
-        candidates: list[_MoveCandidate],
-    ) -> list[_MoveCandidate]:
-        """Select candidate moves that do not share agents or constraint edges."""
-
-        selected: list[_MoveCandidate] = []
-
-        for candidate in sorted(candidates, key=self._priority_key):
-            if any(self._moves_conflict(candidate, selected_move) for selected_move in selected):
-                continue
-            selected.append(candidate)
-
-        return selected
-
-    def _moves_conflict(
-        self,
-        left: _MoveCandidate,
-        right: _MoveCandidate,
-    ) -> bool:
-        """Return True if two moves overlap or are linked by a constraint edge."""
-
-        problem = self._require_problem()
-        left_agents = set(left.agents)
-        right_agents = set(right.agents)
-
-        if not left_agents.isdisjoint(right_agents):
-            return True
-
-        for left_agent in left_agents:
-            for right_agent in right_agents:
-                edge_key = (min(left_agent, right_agent), max(left_agent, right_agent))
-                if edge_key in problem.constraints:
-                    return True
-
-        return False
-
-    @staticmethod
-    def _priority_key(candidate: _MoveCandidate) -> tuple[int, int, tuple[int, ...]]:
-        """Sort candidates by higher gain, pair before single, then lower IDs."""
-
-        pair_priority = 0 if candidate.kind == "pair" else 1
-        return (-candidate.gain, pair_priority, candidate.agents)
-
-    def _wins_against_known_neighbor_candidates(
-        self,
-        candidate: _MoveCandidate,
-        owner_id: int,
-    ) -> bool:
-        """Return True if a candidate beats known overlapping neighbor candidates."""
-
-        known_candidates = self._neighbor_candidates[owner_id].values()
-        candidate_agents = set(candidate.agents)
-        for neighbor_candidate in known_candidates:
-            if candidate_agents.isdisjoint(neighbor_candidate.agents):
-                continue
-            if self._priority_key(neighbor_candidate) < self._priority_key(candidate):
-                return False
-
-        return True
-
-    def _assignment_with_local_view(self, agent_id: int) -> dict[int, int]:
-        """Return current assignment with one agent's neighbor values overlaid."""
-
-        assignment = dict(self._assignment)
-        assignment.update(self._local_views[agent_id])
-        return assignment
-
-    def _build_value_messages(self, agent_id: int) -> list[AlgorithmMessage]:
-        """Build current-value messages from one agent to all neighbors."""
-
-        problem = self._require_problem()
-        return [
-            AlgorithmMessage(
-                sender=agent_id,
-                receiver=neighbor_id,
-                kind="value",
-                payload={
-                    "value": self._assignment[agent_id],
-                },
-            )
-            for neighbor_id in problem.neighbors[agent_id]
-        ]
-
-    def _build_candidate_messages(
-        self,
-        agent_id: int,
-        candidate: _MoveCandidate,
-    ) -> list[AlgorithmMessage]:
-        """Build candidate messages from one agent to all neighbors."""
-
-        problem = self._require_problem()
-        return [
-            AlgorithmMessage(
-                sender=agent_id,
-                receiver=neighbor_id,
-                kind="mgm2_candidate",
-                payload=self._candidate_to_payload(candidate),
-            )
-            for neighbor_id in problem.neighbors[agent_id]
-        ]
-
-    @staticmethod
-    def _candidate_to_payload(candidate: _MoveCandidate) -> dict[str, object]:
-        """Convert a candidate move to a message payload."""
-
-        return {
-            "kind": candidate.kind,
-            "agents": list(candidate.agents),
-            "values": dict(candidate.values),
-            "gain": candidate.gain,
-        }
-
-    @staticmethod
-    def _candidate_from_payload(payload: dict[str, object]) -> _MoveCandidate:
-        """Convert a message payload back to a candidate move."""
-
-        kind = payload.get("kind")
-        agents = payload.get("agents")
-        values = payload.get("values")
-        gain = payload.get("gain")
-
-        if kind not in {"single", "pair"}:
-            raise ValueError("MGM-2 candidate payload has invalid kind.")
-        if not isinstance(agents, list) or any(not isinstance(agent, int) for agent in agents):
-            raise ValueError("MGM-2 candidate payload has invalid agents.")
-        if not isinstance(values, dict):
-            raise ValueError("MGM-2 candidate payload has invalid values.")
-        if not isinstance(gain, int) or gain < 0:
-            raise ValueError("MGM-2 candidate payload has invalid gain.")
-
-        normalized_values: dict[int, int] = {}
-        for agent_id, value in values.items():
-            if not isinstance(agent_id, int) or not isinstance(value, int):
-                raise ValueError("MGM-2 candidate payload values must map int to int.")
-            normalized_values[agent_id] = value
-
-        return _MoveCandidate(
-            kind=kind,
-            agents=tuple(agents),
-            values=normalized_values,
-            gain=gain,
-        )
