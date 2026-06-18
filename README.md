@@ -182,7 +182,7 @@ step limit. Because thread scheduling is non‑deterministic, async curves are
 </tr>
 <tr>
 <td><img src="report/figures/backend_sync.png" width="100%"></td>
-<td><img src="report/figures/example_sync.png" width="100%"></td>
+<td><img src="report/figures/example_sync.png" width="80%"></td>
 </tr>
 </table>
 
@@ -223,7 +223,7 @@ less and **oscillates** between ~4400 and ~5500 for the whole run.
 </tr>
 <tr>
 <td><img src="report/figures/backend_async.png" width="100%"></td>
-<td><img src="report/figures/example_async.png" width="100%"></td>
+<td><img src="report/figures/example_async.png" width="80%"></td>
 </tr>
 </table>
 
