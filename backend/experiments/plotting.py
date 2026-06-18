@@ -21,6 +21,12 @@ ALGORITHM_COLORS = {
     "mgm2": "#2ca02c",  # green
     "dms": "#d62728",  # red
 }
+ALGORITHM_MARKERS = {
+    "dsa-c": "o",  # circle
+    "dms": "s",  # square
+    "mgm": "^",  # triangle
+    "mgm2": "*",  # star
+}
 
 
 def write_average_cost_plots(
@@ -67,6 +73,8 @@ def write_average_cost_plots(
                 [row.average_cost for row in algorithm_rows],
                 label=algorithm_name,
                 color=ALGORITHM_COLORS.get(algorithm_name),
+                marker=ALGORITHM_MARKERS.get(algorithm_name),
+                markersize=5,
             )
 
         title = (
