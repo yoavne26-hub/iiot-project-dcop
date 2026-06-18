@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from backend.algorithms.base import (
-    AlgorithmMessage,
-    AlgorithmStepResult,
-    DistributedAlgorithm,
-)
+from backend.algorithms.base import AlgorithmStepResult, DistributedAlgorithm
 from backend.dcop.problem import BinaryConstraint, DCOPProblem
 
 
@@ -56,15 +52,23 @@ class DMSAlgorithm(DistributedAlgorithm):
         """Run one synchronous damped min-sum iteration."""
 
         problem = self._require_problem()
-        new_variable_to_factor = self._compute_all_variable_to_factor()
-        new_factor_to_variable = self._compute_all_factor_to_variable(new_variable_to_factor)
 
+        # Variable -> factor messages, computed from the previous round's factor
+        # messages, then damped in place.
+        new_variable_to_factor = self._compute_all_variable_to_factor()
         self._variable_to_factor = {
-            key: self._damp_and_normalize(self._variable_to_factor[key], message)
+            key: self._damp(self._variable_to_factor[key], message)
             for key, message in new_variable_to_factor.items()
         }
+
+        # Factor -> variable messages, computed from the just-damped variable
+        # messages (not the raw ones), then damped. Feeding the damped variable
+        # messages into the factor update matches the reference implementation and
+        # is what makes min-sum converge well; using the raw messages here leaves
+        # DMS stuck at a noticeably worse solution.
+        new_factor_to_variable = self._compute_all_factor_to_variable(self._variable_to_factor)
         self._factor_to_variable = {
-            key: self._damp_and_normalize(self._factor_to_variable[key], message)
+            key: self._damp(self._factor_to_variable[key], message)
             for key, message in new_factor_to_variable.items()
         }
 
@@ -82,100 +86,6 @@ class DMSAlgorithm(DistributedAlgorithm):
         """Return a copy of the current assignment."""
 
         return dict(self._assignment)
-
-    def initial_async_messages(self) -> list[AlgorithmMessage]:
-        """Seed the async simulator with zero vector messages on every edge."""
-
-        problem = self._require_problem()
-        messages: list[AlgorithmMessage] = []
-        for edge_key in sorted(problem.constraints):
-            agent_a, agent_b = edge_key
-            messages.append(self._build_message(agent_a, agent_b, edge_key, "variable_to_factor"))
-            messages.append(self._build_message(agent_b, agent_a, edge_key, "variable_to_factor"))
-
-        return messages
-
-    def handle_async_message(self, message: AlgorithmMessage) -> AlgorithmStepResult:
-        """Apply one async DMS vector message."""
-
-        problem = self._require_problem()
-        edge_key = self._parse_edge_key(message.payload.get("edge"))
-        vector = self._parse_vector(message.payload.get("vector"))
-
-        if edge_key not in problem.constraints:
-            raise ValueError(f"Unknown DMS edge key: {edge_key}.")
-        if message.sender not in edge_key or message.receiver not in edge_key:
-            raise ValueError("DMS messages must stay on the constraint edge.")
-
-        kind = message.kind
-        if kind == "variable_to_factor":
-            self._variable_to_factor[(message.sender, edge_key)] = vector
-        elif kind == "factor_to_variable":
-            self._factor_to_variable[(edge_key, message.receiver)] = vector
-        else:
-            raise ValueError(f"Unsupported DMS message kind: {kind}.")
-
-        return AlgorithmStepResult(changed_agents=set(), messages_sent=0)
-
-    def on_async_activation(self, agent_id: int) -> AlgorithmStepResult:
-        """Run one deterministic async DMS activation for an agent."""
-
-        problem = self._require_problem()
-        if not 0 <= agent_id < problem.num_agents:
-            raise ValueError(f"agent_id must be in 0..{problem.num_agents - 1}.")
-
-        messages: list[AlgorithmMessage] = []
-        incident_edges = [
-            (min(agent_id, neighbor_id), max(agent_id, neighbor_id))
-            for neighbor_id in problem.neighbors[agent_id]
-        ]
-
-        for edge_key in incident_edges:
-            variable_key = (agent_id, edge_key)
-            new_variable_message = self._compute_variable_to_factor(agent_id, edge_key)
-            self._variable_to_factor[variable_key] = self._damp_and_normalize(
-                self._variable_to_factor[variable_key],
-                new_variable_message,
-            )
-            messages.append(
-                self._build_message(
-                    sender=agent_id,
-                    receiver=self._other_agent(edge_key, agent_id),
-                    edge_key=edge_key,
-                    kind="variable_to_factor",
-                )
-            )
-
-        for edge_key in incident_edges:
-            constraint = problem.constraints[edge_key]
-            for target_agent in edge_key:
-                factor_key = (edge_key, target_agent)
-                new_factor_message = self._compute_factor_to_variable(
-                    constraint,
-                    target_agent,
-                    self._variable_to_factor,
-                )
-                self._factor_to_variable[factor_key] = self._damp_and_normalize(
-                    self._factor_to_variable[factor_key],
-                    new_factor_message,
-                )
-                messages.append(
-                    self._build_message(
-                        sender=self._other_agent(edge_key, target_agent),
-                        receiver=target_agent,
-                        edge_key=edge_key,
-                        kind="factor_to_variable",
-                    )
-                )
-
-        changed_agents = self._update_single_assignment_from_belief(agent_id)
-        return AlgorithmStepResult(
-            changed_agents=changed_agents,
-            messages_sent=len(messages),
-            metadata={
-                "messages": messages,
-            },
-        )
 
     def _require_problem(self) -> DCOPProblem:
         """Return the initialized problem or fail clearly."""
@@ -239,7 +149,7 @@ class DMSAlgorithm(DistributedAlgorithm):
                 total += self._factor_to_variable[(edge_key, agent_id)][value]
             values.append(total)
 
-        return tuple(values)
+        return self._normalize(tuple(values))
 
     def _compute_factor_to_variable(
         self,
@@ -267,7 +177,7 @@ class DMSAlgorithm(DistributedAlgorithm):
                     best_cost = candidate_cost
             values.append(float(best_cost if best_cost is not None else 0.0))
 
-        return tuple(values)
+        return self._normalize(tuple(values))
 
     def _update_assignment_from_beliefs(self) -> set[int]:
         """Update variable assignments from current beliefs."""
@@ -286,19 +196,6 @@ class DMSAlgorithm(DistributedAlgorithm):
         self._assignment = updated_assignment
         return changed_agents
 
-    def _update_single_assignment_from_belief(self, agent_id: int) -> set[int]:
-        """Update only one variable assignment from its current belief."""
-
-        problem = self._require_problem()
-        belief = self._belief(agent_id)
-        best_value = min(range(problem.domain_size), key=lambda value: belief[value])
-
-        if self._assignment[agent_id] == best_value:
-            return set()
-
-        self._assignment[agent_id] = best_value
-        return {agent_id}
-
     def _belief(self, agent_id: int) -> MessageVector:
         """Return the belief vector for one variable."""
 
@@ -314,68 +211,29 @@ class DMSAlgorithm(DistributedAlgorithm):
 
         return tuple(values)
 
-    def _damp_and_normalize(
+    def _damp(
         self,
         old_message: MessageVector,
         new_message: MessageVector,
     ) -> MessageVector:
-        """Apply damping and subtract the minimum entry."""
+        """Blend the previous message with the freshly computed one.
 
-        damped = tuple(
+        The freshly computed message is already normalized (its minimum entry is
+        zero) before it reaches here, matching the reference implementation which
+        normalizes each computed message and then damps without renormalizing.
+        """
+
+        return tuple(
             (1 - self.damping) * old_value + self.damping * new_value
             for old_value, new_value in zip(old_message, new_message)
         )
-        minimum = min(damped, default=0.0)
-        return tuple(value - minimum for value in damped)
 
-    def _build_message(
-        self,
-        sender: int,
-        receiver: int,
-        edge_key: tuple[int, int],
-        kind: str,
-    ) -> AlgorithmMessage:
-        """Build a serializable async DMS vector message."""
+    @staticmethod
+    def _normalize(message: MessageVector) -> MessageVector:
+        """Shift a message so its minimum entry is zero."""
 
-        if kind == "variable_to_factor":
-            vector = self._variable_to_factor[(sender, edge_key)]
-        elif kind == "factor_to_variable":
-            vector = self._factor_to_variable[(edge_key, receiver)]
-        else:
-            raise ValueError(f"Unsupported DMS message kind: {kind}.")
-
-        return AlgorithmMessage(
-            sender=sender,
-            receiver=receiver,
-            kind=kind,
-            payload={
-                "edge": edge_key,
-                "vector": vector,
-            },
-        )
-
-    def _parse_edge_key(self, value: object) -> tuple[int, int]:
-        """Validate and return an edge key from a message payload."""
-
-        if (
-            not isinstance(value, (tuple, list))
-            or len(value) != 2
-            or not all(isinstance(agent_id, int) for agent_id in value)
-        ):
-            raise ValueError("DMS message edge must contain two integer agent IDs.")
-        return min(value), max(value)
-
-    def _parse_vector(self, value: object) -> MessageVector:
-        """Validate and return a message vector from a message payload."""
-
-        problem = self._require_problem()
-        if (
-            not isinstance(value, (tuple, list))
-            or len(value) != problem.domain_size
-            or not all(isinstance(entry, (int, float)) for entry in value)
-        ):
-            raise ValueError("DMS message vector must match the domain size.")
-        return tuple(float(entry) for entry in value)
+        minimum = min(message, default=0.0)
+        return tuple(value - minimum for value in message)
 
     @staticmethod
     def _zero_vector(domain_size: int) -> MessageVector:

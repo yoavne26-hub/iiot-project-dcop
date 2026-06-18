@@ -12,6 +12,22 @@ SIMULATOR_PLOT_NAMES = {
     "async": "asynchronous_average_cost.png",
 }
 
+# Plot order and colors chosen to match the reference example graphs
+# (matplotlib default cycle applied to DSA-C, MGM, MGM-2, DMS in that order).
+ALGORITHM_PLOT_ORDER = ("dsa-c", "mgm", "mgm2", "dms")
+ALGORITHM_COLORS = {
+    "dsa-c": "#1f77b4",  # blue
+    "mgm": "#ff7f0e",  # orange
+    "mgm2": "#2ca02c",  # green
+    "dms": "#d62728",  # red
+}
+ALGORITHM_MARKERS = {
+    "dsa-c": "o",  # circle
+    "dms": "s",  # square
+    "mgm": "^",  # triangle
+    "mgm2": "*",  # star
+}
+
 
 def write_average_cost_plots(
     average_rows: list[AverageCostRow],
@@ -43,7 +59,11 @@ def write_average_cost_plots(
             by_algorithm.setdefault(row.algorithm, []).append(row)
 
         plt.figure(figsize=(10, 6))
-        for algorithm_name in sorted(by_algorithm):
+        # Iterate in the reference order first, then any remaining algorithms.
+        ordered_names = [
+            name for name in ALGORITHM_PLOT_ORDER if name in by_algorithm
+        ] + [name for name in sorted(by_algorithm) if name not in ALGORITHM_PLOT_ORDER]
+        for algorithm_name in ordered_names:
             algorithm_rows = sorted(
                 by_algorithm[algorithm_name],
                 key=lambda row: row.iteration,
@@ -52,6 +72,9 @@ def write_average_cost_plots(
                 [row.iteration for row in algorithm_rows],
                 [row.average_cost for row in algorithm_rows],
                 label=algorithm_name,
+                color=ALGORITHM_COLORS.get(algorithm_name),
+                marker=ALGORITHM_MARKERS.get(algorithm_name),
+                markersize=5,
             )
 
         title = (
