@@ -52,13 +52,21 @@ class DMSAlgorithm(DistributedAlgorithm):
         """Run one synchronous damped min-sum iteration."""
 
         problem = self._require_problem()
-        new_variable_to_factor = self._compute_all_variable_to_factor()
-        new_factor_to_variable = self._compute_all_factor_to_variable(new_variable_to_factor)
 
+        # Variable -> factor messages, computed from the previous round's factor
+        # messages, then damped in place.
+        new_variable_to_factor = self._compute_all_variable_to_factor()
         self._variable_to_factor = {
             key: self._damp(self._variable_to_factor[key], message)
             for key, message in new_variable_to_factor.items()
         }
+
+        # Factor -> variable messages, computed from the just-damped variable
+        # messages (not the raw ones), then damped. Feeding the damped variable
+        # messages into the factor update matches the reference implementation and
+        # is what makes min-sum converge well; using the raw messages here leaves
+        # DMS stuck at a noticeably worse solution.
+        new_factor_to_variable = self._compute_all_factor_to_variable(self._variable_to_factor)
         self._factor_to_variable = {
             key: self._damp(self._factor_to_variable[key], message)
             for key, message in new_factor_to_variable.items()
