@@ -1,0 +1,69 @@
+Sleep prevention: disabled by user flag.
+
+--- Running Synchronous simulator ---
+Algorithm: DSA-C
+  [#-----------------------] total=  2.50% | algorithm= 20.00% | problem  1/5: initial=17248, final=10746, messages=136000, changes=223, time=0.67s
+  [#-----------------------] total=  5.00% | algorithm= 40.00% | problem  2/5: initial=18616, final=11843, messages=146800, changes=177, time=0.68s
+  [##----------------------] total=  7.50% | algorithm= 60.00% | problem  3/5: initial=17808, final=11918, messages=148000, changes=129, time=0.68s
+  [##----------------------] total= 10.00% | algorithm= 80.00% | problem  4/5: initial=18503, final=11908, messages=149600, changes=335, time=0.69s
+  [###---------------------] total= 12.50% | algorithm=100.00% | problem  5/5: initial=19826, final=13492, messages=162400, changes=231, time=0.76s
+Algorithm: MGM
+  [####--------------------] total= 15.00% | algorithm= 20.00% | problem  1/5: initial=17248, final=11053, messages=19040, changes=40, time=0.05s
+  [####--------------------] total= 17.50% | algorithm= 40.00% | problem  2/5: initial=18616, final=12233, messages=23488, changes=40, time=0.07s
+  [#####-------------------] total= 20.00% | algorithm= 60.00% | problem  3/5: initial=17808, final=12198, messages=22200, changes=36, time=0.06s
+  [#####-------------------] total= 22.50% | algorithm= 80.00% | problem  4/5: initial=18503, final=12562, messages=25432, changes=38, time=0.07s
+  [######------------------] total= 25.00% | algorithm=100.00% | problem  5/5: initial=19826, final=14090, messages=32480, changes=37, time=0.09s
+Algorithm: MGM-2
+  [#######-----------------] total= 27.50% | algorithm= 20.00% | problem  1/5: initial=17248, final=10427, messages=408000, changes=57, time=6.46s
+  [#######-----------------] total= 30.00% | algorithm= 40.00% | problem  2/5: initial=18616, final=11588, messages=440400, changes=50, time=6.81s
+  [########----------------] total= 32.50% | algorithm= 60.00% | problem  3/5: initial=17808, final=11561, messages=444000, changes=67, time=6.88s
+  [########----------------] total= 35.00% | algorithm= 80.00% | problem  4/5: initial=18503, final=12270, messages=448800, changes=64, time=6.90s
+  [#########---------------] total= 37.50% | algorithm=100.00% | problem  5/5: initial=19826, final=13255, messages=487200, changes=67, time=7.44s
+Algorithm: DMS
+  [##########--------------] total= 40.00% | algorithm= 20.00% | problem  1/5: initial=17248, final=11289, messages=272000, changes=6487, time=1.77s
+  [##########--------------] total= 42.50% | algorithm= 40.00% | problem  2/5: initial=18616, final=16371, messages=293600, changes=6465, time=1.93s
+  [###########-------------] total= 45.00% | algorithm= 60.00% | problem  3/5: initial=17808, final=14810, messages=296000, changes=6377, time=1.95s
+  [###########-------------] total= 47.50% | algorithm= 80.00% | problem  4/5: initial=18503, final=15541, messages=299200, changes=6425, time=1.97s
+  [############------------] total= 50.00% | algorithm=100.00% | problem  5/5: initial=19826, final=17239, messages=324800, changes=6724, time=2.23s
+
+--- Running Asynchronous simulator ---
+Algorithm: DSA-C
+  [#############-----------] total= 52.50% | algorithm= 20.00% | problem  1/5: initial=17248, final=11119, messages=193489, changes=69, time=1.37s
+  [#############-----------] total= 55.00% | algorithm= 40.00% | problem  2/5: initial=18616, final=12525, messages=220886, changes=53, time=1.53s
+  [##############----------] total= 57.50% | algorithm= 60.00% | problem  3/5: initial=17808, final=12111, messages=217990, changes=68, time=1.50s
+  [##############----------] total= 60.00% | algorithm= 80.00% | problem  4/5: initial=18503, final=12036, messages=223628, changes=75, time=1.53s
+  [###############---------] total= 62.50% | algorithm=100.00% | problem  5/5: initial=19826, final=13890, messages=243079, changes=57, time=1.67s
+Algorithm: MGM
+  [################--------] total= 65.00% | algorithm= 20.00% | problem  1/5: initial=17248, final=11181, messages=223860, changes=41, time=0.94s
+  [################--------] total= 67.50% | algorithm= 40.00% | problem  2/5: initial=18616, final=12473, messages=243741, changes=36, time=1.00s
+  [#################-------] total= 70.00% | algorithm= 60.00% | problem  3/5: initial=17808, final=12200, messages=249857, changes=40, time=1.03s
+  [#################-------] total= 72.50% | algorithm= 80.00% | problem  4/5: initial=18503, final=12620, messages=248400, changes=41, time=1.02s
+  [##################------] total= 75.00% | algorithm=100.00% | problem  5/5: initial=19826, final=13449, messages=269894, changes=44, time=1.04s
+Algorithm: MGM-2
+  [###################-----] total= 77.50% | algorithm= 20.00% | problem  1/5: initial=17248, final=10662, messages=206331, changes=172, time=1.15s
+  [###################-----] total= 80.00% | algorithm= 40.00% | problem  2/5: initial=18616, final=12467, messages=238250, changes=163, time=1.37s
+  [####################----] total= 82.50% | algorithm= 60.00% | problem  3/5: initial=17808, final=11766, messages=220796, changes=136, time=1.31s
+  [####################----] total= 85.00% | algorithm= 80.00% | problem  4/5: initial=18503, final=12527, messages=205682, changes=144, time=1.24s
+  [#####################---] total= 87.50% | algorithm=100.00% | problem  5/5: initial=19826, final=13820, messages=245502, changes=137, time=1.39s
+Algorithm: DMS
+  [######################--] total= 90.00% | algorithm= 20.00% | problem  1/5: initial=17248, final=11532, messages=313954, changes=5420, time=3.04s
+  [######################--] total= 92.50% | algorithm= 40.00% | problem  2/5: initial=18616, final=12549, messages=337314, changes=5124, time=3.29s
+  [#######################-] total= 95.00% | algorithm= 60.00% | problem  3/5: initial=17808, final=14490, messages=347618, changes=6005, time=3.39s
+  [#######################-] total= 97.50% | algorithm= 80.00% | problem  4/5: initial=18503, final=14906, messages=348765, changes=6020, time=3.40s
+  [########################] total=100.00% | algorithm=100.00% | problem  5/5: initial=19826, final=17463, messages=372848, changes=5963, time=3.70s
+Saved sync_results.png
+Saved async_results.png
+
+==================== EXPERIMENT SUMMARY ====================
+Simulator      Algorithm      Initial        Final     Messages      Changes   Runtime(s)    Converged
+------------------------------------------------------------------------------------------------------
+Asynchronous   DMS          18400.20     14188.00    344099.80      5706.40        16.81            0
+Asynchronous   DSA-C        18400.20     12336.20    219814.40        64.40         7.60            0
+Asynchronous   MGM          18400.20     12384.60    247150.40        40.40         5.02            0
+Asynchronous   MGM-2        18400.20     12248.40    223312.20       150.40         6.47            0
+Synchronous    DMS          18400.20     15050.00    297120.00      6495.60         9.85            0
+Synchronous    DSA-C        18400.20     11981.40    148560.00       219.00         3.48            0
+Synchronous    MGM          18400.20     12427.20     24528.00        38.20         0.34     5 @ 16.4
+Synchronous    MGM-2        18400.20     11820.20    445680.00        61.00        34.48            0
+============================================================
+

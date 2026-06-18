@@ -18,7 +18,7 @@ class DSACAlgorithm(DistributedAlgorithm):
 
     name = "dsa-c"
 
-    def __init__(self, probability: float = 0.75, seed: int | None = None) -> None:
+    def __init__(self, probability: float = 0.70, seed: int | None = None) -> None:
         if not 0 <= probability <= 1:
             raise ValueError("probability must be between 0 and 1.")
 
@@ -77,7 +77,7 @@ class DSACAlgorithm(DistributedAlgorithm):
                     best_value = candidate_value
                     best_cost = candidate_cost
 
-            if best_cost < current_cost and self._rng.random() < self.probability:
+            if best_cost <= current_cost and self._rng.random() < self.probability:
                 selected_changes[agent_id] = best_value
 
         if selected_changes:
@@ -151,7 +151,7 @@ class DSACAlgorithm(DistributedAlgorithm):
                 best_cost = candidate_cost
 
         changed_agents: set[int] = set()
-        if best_cost < current_cost and self._rng.random() < self.probability:
+        if best_cost <= current_cost and self._rng.random() < self.probability:
             self._assignment[agent_id] = best_value
             changed_agents.add(agent_id)
 

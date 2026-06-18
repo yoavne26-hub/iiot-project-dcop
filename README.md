@@ -27,7 +27,7 @@ The default full experiment uses:
 - binary constraints
 - constraint costs from 1 to 100
 - 1000 iterations
-- DSA-C probability 0.75
+- DSA-C probability 0.70
 - DMS damping lambda 0.9
 - plot and CSV sampling every 5 iterations
 

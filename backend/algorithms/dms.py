@@ -322,7 +322,7 @@ class DMSAlgorithm(DistributedAlgorithm):
         """Apply damping and subtract the minimum entry."""
 
         damped = tuple(
-            self.damping * old_value + (1 - self.damping) * new_value
+            (1 - self.damping) * old_value + self.damping * new_value
             for old_value, new_value in zip(old_message, new_message)
         )
         minimum = min(damped, default=0.0)
