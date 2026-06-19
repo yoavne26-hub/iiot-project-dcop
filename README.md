@@ -11,11 +11,11 @@ also validates the implementation against a reference implementation on identica
 problem instances.
 
 > **TL;DR.** The three *local-search* algorithms (DSA‑C, MGM, MGM‑2) converge
-> within ~30 iterations to a good local optimum (≈ 37 % cost reduction at 50
+> within ~30 iterations to a good local optimum (≈ 35–37 % cost reduction at 50
 > agents). The *inference* algorithm (DMS / damped min‑sum) **oscillates for the
 > entire run and never settles** — because the random DCOP factor graphs are
 > densely cyclic, where belief propagation has no convergence guarantee. Crucially,
-> DMS's *best-seen* assignment is competitive (≈ 34–38 %); it simply drifts away
+> DMS's *best-seen* assignment is competitive (≈ 36–39 %); it simply drifts away
 > from it. On identical instances our backend matches the reference implementation
 > (MGM and DMS bit‑for‑bit; DSA‑C and MGM‑2 within stochastic noise).
 
@@ -78,12 +78,12 @@ The graphs in this report come from the **full simulation run**:
 | Domain size | 10 |
 | Constraint probability `p` | 0.30 (≈ 367 edges, mean degree ≈ 15) |
 | Constraint cost range | 1 – 100 |
-| Iterations / async steps | 500 |
+| Iterations / async steps | 1000 |
 | DSA‑C move probability | 0.70 |
 | DMS damping λ | 0.90 |
-| Mean initial cost | 18,552 |
+| Mean initial cost | 18,447 |
 
-Each curve is the **average global cost over the 5 problems** at each iteration.
+Each curve is the **average global cost over the 50 problems** at each iteration.
 
 ---
 
@@ -183,19 +183,19 @@ step limit. Because thread scheduling is non‑deterministic, async curves are
 ![Synchronous average cost](report/figures/backend_sync.png)
 
 **What the graph shows.** The three local‑search algorithms (blue = DSA‑C ●,
-orange = MGM ▲, green = MGM‑2 ★) collapse from 18,552 to ≈ 11,500–11,750 within
-**~30 iterations** and then stay perfectly flat for the remaining ~470 iterations.
-DMS (red ■) drops less and **oscillates between ~14,000 and ~16,300 for the entire
-run** — it never converges.
+orange = MGM ▲, green = MGM‑2 ★) collapse from 18,447 to ≈ 11,700–12,000 within
+**~30 iterations** and then stay essentially flat for the remaining ~970
+iterations. DMS (red ■) drops less and **oscillates around ~14,800–15,700 for the
+entire run** — it never converges.
 
-**Average results over the 5 problems (synchronous, 500 iterations):**
+**Average results over the 50 problems (synchronous, 1000 iterations):**
 
 | algorithm | final cost | drop | best‑seen | messages | runtime |
 |---|--:|--:|--:|--:|--:|
-| dsa‑c | 11,634 | 37.3 % | 11,634 | 361,200 | 34 s |
-| mgm   | 11,738 | 36.7 % | 11,738 | 722,400 | 34 s |
-| mgm2  | 11,541 | **37.8 %** | 11,541 | 1,083,600 | 70 s |
-| dms   | 14,795 | 20.2 % | **12,201 (34.2 %)** | 722,400 | 1,014 s |
+| dsa‑c | 11,797 | 36.0 % | 11,797 | 731,400 | 10.6 min |
+| mgm   | 11,991 | 35.0 % | 11,991 | 1,462,800 | 10.6 min |
+| mgm2  | 11,714 | **36.5 %** | 11,714 | 2,194,200 | 22.5 min |
+| dms   | 15,137 | 17.9 % | **11,729 (36.4 %)** | 1,462,800 | 324.6 min |
 
 **Why we see this.**
 
@@ -204,17 +204,17 @@ run** — it never converges.
   iterations add nothing. MGM‑2 reaches the lowest plateau because its pair moves
   escape optima the single‑agent methods cannot.
 - **DMS oscillates and never settles** — the loopy‑graph behaviour of §3.4. But
-  its *best‑seen* cost (12,201, a 34.2 % reduction) is close to local search: DMS
-  *does* find good assignments, it just drifts away from them (see §7).
+  its *best‑seen* cost (11,729, a 36.4 % reduction) is on par with local search:
+  DMS *does* find good assignments, it just drifts away from them (see §7).
 - **Communication cost** scales with the message pattern: DSA‑C sends one value
   message per neighbour (cheapest), MGM adds gains (2×), DMS exchanges Q/R vectors,
   and MGM‑2's propose/accept handshake is the most expensive (3×). Because the
   synchronous simulator runs the full iteration count (no early stop), these scale
   linearly with iterations.
-- **Runtime** is dominated by the synchronous DMS (1,014 s). It is the only
-  pure‑Python algorithm; the async DMS (and the reference) are numpy‑vectorised and
-  ~30× faster. This is why a full 50‑agent / 1000‑iteration run currently takes
-  ~7.4 h — see §10.
+- **Runtime** is dominated by the synchronous DMS (**324.6 min ≈ 5.4 h** of the
+  ~6.5 h total). It is the only pure‑Python algorithm; the async DMS (and the
+  reference) are numpy‑vectorised and ~30× faster. Vectorising the sync DMS would
+  bring the whole run to ~1.5 h — see §10.
 
 ---
 
@@ -222,23 +222,23 @@ run** — it never converges.
 
 ![Asynchronous average cost](report/figures/backend_async.png)
 
-**Average results over the 5 problems (asynchronous, 500 steps):**
+**Average results over the 50 problems (asynchronous, 1000 steps):**
 
 | algorithm | final cost | drop | best‑seen | runtime |
 |---|--:|--:|--:|--:|
-| dsa‑c | 11,762 | 36.6 % | 11,762 | 11 s |
-| mgm   | 11,784 | 36.5 % | 11,784 | 8 s |
-| mgm2  | 11,713 | 36.9 % | 11,488 | 10 s |
-| dms   | 14,129 | 23.8 % | **11,566 (37.7 %)** | 36 s |
+| dsa‑c | 11,928 | 35.3 % | 11,928 | 3.8 min |
+| mgm   | 12,022 | 34.8 % | 12,022 | 2.4 min |
+| mgm2  | 11,647 | 36.9 % | 11,358 (38.4 %) | 3.4 min |
+| dms   | 13,906 | 24.6 % | **11,310 (38.7 %)** | 11.4 min |
 
 **Why we see this.** The qualitative picture matches the synchronous case — local
 search converges fast and low, DMS oscillates high — confirming the behaviour is a
 property of the *algorithms*, not the execution model. The async curves are
 **jaggier**, because each agent acts on whatever messages have arrived so far (not
 a clean global snapshot) and thread timing varies run to run. DMS is the noisiest
-of all; its *best‑seen* assignment (11,566, 37.7 %) actually **matches local
-search**, again showing that DMS's poor *final* number is an artefact of its
-oscillation, not of solution quality.
+of all, yet its *best‑seen* assignment (11,310, **38.7 % — the lowest cost reached
+by any method in the whole study**) again shows that DMS's poor *final* number is
+an artefact of its oscillation, not of solution quality.
 
 > **Engineering note.** Reaching this required rewriting the async simulator to a
 > true per‑agent‑thread design (each agent owns its state; no global lock). An
@@ -296,9 +296,10 @@ footing the two implementations are equivalent.**
 
 ## 9. Summary
 
-- **Algorithm ranking on dense random DCOPs (50 agents):** MGM‑2 ≈ DSA‑C ≈ MGM
-  (≈ 37 % reduction, converged by ~30 iterations) ≫ DMS by *final* cost (20–24 %,
-  oscillating) — though DMS's *best‑seen* is competitive (~34–38 %).
+- **Algorithm ranking on dense random DCOPs (50 agents, 50 problems):**
+  MGM‑2 ≈ DSA‑C ≈ MGM (≈ 35–37 % reduction, converged by ~30 iterations) ≫ DMS by
+  *final* cost (18–25 %, oscillating) — though DMS's *best‑seen* is the strongest of
+  all (up to 38.7 %).
 - **MGM** is the smoothest and stable but most easily trapped; **MGM‑2** reaches
   the lowest cost but is the most communication‑hungry; **DSA‑C** is a good cheap
   middle ground.
@@ -314,26 +315,21 @@ footing the two implementations are equivalent.**
 
 ## 10. Reproducing the experiments
 
-The full simulation in this report (5 problems, 50 agents, 500 iterations):
-
-```bash
-python main.py --mode full --problems 5 --agents 50 --iterations 500 \
-  --algorithms dsa-c,mgm,mgm2,dms --simulators sync,async \
-  --output-dir results
-```
-
-Default full experiment (50 problems, 50 agents, 1000 iterations):
+The full simulation in this report is the default experiment — **50 problems, 50
+agents, 1000 iterations**, both simulators, all four algorithms:
 
 ```bash
 python main.py
 ```
 
-Useful flags: `--constraint-probability`, `--seed`, `--no-progress`, `--no-plots`,
-`--output-dir`. Outputs are average‑cost CSVs and the PNG graphs shown above.
+Outputs (average‑cost CSVs and the PNG graphs shown above) are written to
+`results/`. Useful flags: `--problems`, `--agents`, `--iterations`,
+`--constraint-probability`, `--seed`, `--no-progress`, `--no-plots`,
+`--output-dir`.
 
-> Note: the default 50/50/1000 run currently takes ~7.4 h, dominated by the
-> pure‑Python synchronous DMS; vectorising it with numpy (as the async DMS already
-> is) would bring it to ~1.5 h.
+> Note: this full run took **~6.5 h**, almost entirely the pure‑Python synchronous
+> DMS (~5.4 h); vectorising it with numpy (as the async DMS already is) would bring
+> the whole run to ~1.5 h.
 
 ### Project layout
 
