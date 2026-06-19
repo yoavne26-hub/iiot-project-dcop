@@ -73,7 +73,7 @@ The graphs in this report come from the **full simulation run**:
 
 | Parameter | Value |
 |---|---|
-| Problems (averaged) | 5 |
+| Problems (averaged) | 50 |
 | Agents | 50 |
 | Domain size | 10 |
 | Constraint probability `p` | 0.30 (≈ 367 edges, mean degree ≈ 15) |
