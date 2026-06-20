@@ -214,7 +214,7 @@ entire run** — it never converges.
 - **Runtime** is dominated by the synchronous DMS (**324.6 min ≈ 5.4 h** of the
   ~6.5 h total). It is the only pure‑Python algorithm; the async DMS (and the
   reference) are numpy‑vectorised and ~30× faster. Vectorising the sync DMS would
-  bring the whole run to ~1.5 h — see §10.
+  bring the whole run to ~1.5 h — see §11.
 
 ---
 
@@ -266,7 +266,109 @@ improving moves, so its final state *is* its best state.
 
 ---
 
-## 8. Implementation validation against the reference
+## 8. Does DMS improve with more iterations? — a long-horizon study
+
+Section 7 argues DMS's high *final* cost is an artefact of oscillation, not of
+solution quality. That raises a natural question: **if we let DMS run far longer,
+does the oscillation band itself drift downward, or does it just keep bouncing in
+place?** To find out we ran a dedicated **DMS-only** experiment — **5 problems, 50
+agents, 5,000 iterations** (5× the main study) under both simulators, recording the
+average cost every 5 iterations.
+
+> **Caveat — small sample.** This is only **5 problems** (vs 50 in the main run),
+> so the per-iteration curves are far noisier and the run-to-run spread is large.
+> Individual problems matter a lot here (one sync problem ended at a 6.7 % drop,
+> another at 43.5 %). Treat the numbers as **trend indicators, not precise
+> averages.** Even so, a clear and consistent pattern emerges, especially for the
+> synchronous simulator.
+
+### 8.1 Synchronous — a slow, staircase-like descent
+
+![DMS synchronous, 5000 iterations](report/figures/dms_long_run_sync.png)
+
+The synchronous curve still oscillates violently from point to point, but unlike
+the 1,000-iteration view it now reveals a **downward staircase**: the oscillation
+band sits at **≈ 15,300** early on, then steps down to **≈ 14,400** around
+iteration 1,800, and again to **≈ 13,700** after iteration 4,000. The band mean
+falls monotonically across the run:
+
+| iteration window | mean cost | vs. previous window |
+|---|--:|--:|
+| 5 – 1,000   | 15,274 | — (initial 18,552) |
+| 1,000 – 2,000 | 14,928 | −2.3 % |
+| 2,000 – 3,000 | 14,427 | −3.4 % |
+| 3,000 – 4,000 | 14,383 | −0.3 % |
+| 4,000 – 5,000 | **13,681** | −4.9 % |
+
+So **DMS does keep improving with more iterations** — the damped messages slowly
+shepherd the beliefs toward better assignments — but the gain is gradual and
+non-monotone, and it never flattens into a true fixed point within 5,000 steps.
+
+### 8.2 Asynchronous — converges fast, then plateaus
+
+![DMS asynchronous, 5000 iterations](report/figures/dms_long_run_async.png)
+
+The asynchronous curve behaves completely differently: it **collapses from 18,552
+to its operating band (≈ 14,100) within the first few steps and then stays there
+for the entire 5,000 iterations** — its window means are essentially flat (14,069
+→ 14,068 → 14,178 → 14,241 → 14,245), if anything drifting *very slightly upward*.
+Async reaches a good band almost immediately but, lacking the synchronous model's
+coordinated global rounds, it does not exploit the extra iterations to descend
+further; it just keeps churning around the same level.
+
+### 8.3 The trend at a glance — smoothed comparison
+
+To see past the point-to-point noise, the figure below overlays both simulators
+with a **100-iteration rolling mean** (faint lines are the raw curves):
+
+![DMS long-run smoothed comparison](report/figures/dms_long_run_smoothed.png)
+
+The smoothed view makes the contrast obvious: **sync starts higher but keeps
+stepping down, and crosses *below* async at around iteration 4,000**, finishing at
+**≈ 13,640** vs async's **≈ 14,250**. Given more iterations, the *synchronous*
+DMS is the one that benefits; the asynchronous DMS has already extracted what it
+can by step ~50.
+
+### 8.4 Best-seen vs. final — the anytime gap persists
+
+The §7 story holds at this longer horizon too: the **best assignment ever visited**
+is far better than the final one, and the gap is large because DMS drifts away from
+its own good solutions.
+
+**Per-problem results (5 problems, 5,000 iterations):**
+
+| simulator | problem (seed) | initial | final cost | final drop | best-seen | best drop |
+|---|---|--:|--:|--:|--:|--:|
+| sync  | 0 (42) | 20,039 | 18,692 | 6.7 %  | 13,483 | 32.7 % |
+| sync  | 1 (43) | 19,945 | 11,853 | 40.6 % | 11,853 | 40.6 % |
+| sync  | 2 (44) | 18,506 | 16,616 | 10.2 % | 11,254 | 39.2 % |
+| sync  | 3 (45) | 16,166 | 12,024 | 25.6 % | 9,743  | 39.7 % |
+| sync  | 4 (46) | 18,103 | 10,233 | 43.5 % | 10,092 | 44.3 % |
+| **sync avg** | | 18,552 | 13,884 | **25.2 %** | 11,285 | **39.2 %** |
+| async | 0 (42) | 20,039 | 12,976 | 35.2 % | 12,897 | 35.6 % |
+| async | 1 (43) | 19,945 | 15,958 | 20.0 % | 12,065 | 39.5 % |
+| async | 2 (44) | 18,506 | 13,524 | 26.9 % | 11,037 | 40.4 % |
+| async | 3 (45) | 16,166 | 9,885  | 38.9 % | 9,155  | 43.4 % |
+| async | 4 (46) | 18,103 | 12,403 | 31.5 % | 10,092 | 44.3 % |
+| **async avg** | | 18,552 | 12,949 | **30.2 %** | 11,049 | **40.4 %** |
+
+Two things stand out. First, the **per-problem spread is huge** (sync final drops
+range from 6.7 % to 43.5 %) — exactly what the 5-problem caveat warns about; the
+*final* number is at the mercy of wherever the oscillation happened to land on the
+last step. Second, the **best-seen drops are tight and strong** (39–40 % on
+average, up to 44.3 %) regardless of where the final landed — reinforcing §7's
+conclusion that an **anytime (best-so-far) decode rule** would turn DMS from a
+mediocre *final*-cost method into a competitive one. Longer runs help the best-seen
+too: the sync best-seen average here (39.2 %) edges out the main-study figure.
+
+**Takeaway.** More iterations *do* help DMS — but mostly in the **synchronous**
+model, where the band descends in a slow staircase, and mostly for the **best-seen**
+assignment rather than the volatile final one. Asynchronous DMS converges to its
+band almost instantly and then coasts. (Small-sample caveat applies throughout.)
+
+---
+
+## 9. Implementation validation against the reference
 
 Absolute costs cannot be compared directly between our backend and the reference
 implementation, because the two use **different random number generators** and
@@ -294,7 +396,7 @@ footing the two implementations are equivalent.**
 
 ---
 
-## 9. Summary
+## 10. Summary
 
 - **Algorithm ranking on dense random DCOPs (50 agents, 50 problems):**
   MGM‑2 ≈ DSA‑C ≈ MGM (≈ 35–37 % reduction, converged by ~30 iterations) ≫ DMS by
@@ -313,7 +415,7 @@ footing the two implementations are equivalent.**
 
 ---
 
-## 10. Reproducing the experiments
+## 11. Reproducing the experiments
 
 The full simulation in this report is the default experiment — **50 problems, 50
 agents, 1000 iterations**, both simulators, all four algorithms:
